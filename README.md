@@ -101,3 +101,16 @@ AAC 核心采用 FAAD2 **2.11.3**，保留原作者声明与 GPL-2.0-or-later �
 仓库保留必要的完整许可文本和来源记录；FAAD2 源码仅在构建目录及独立发行源码包中。
 FAAD2 许可证位于 `third_party/faad2/COPYING`，VC-LTL 和 YY-Thunks 的许可证位于
 `docs/licenses`。发行 ZIP 只携带运行文件和校验值。
+
+## 日期版本与 Release 体积优先构建
+
+DLL 的文件版本和产品版本使用北京时间 `yyyy.MM.dd`，同日发布补丁使用 `pN`；
+例如 `2026.10.06p1` 对应固定数字版本 `2026.10.6.1`。Actions 在编译前确定最终版本，
+DLL、发行包和发布标签使用同一版本。各项目继续独立构建。
+
+Release 的统一配置见 [cmake/size_release.cmake](cmake/size_release.cmake)：
+`/O1 /Os /Gy /Gw /GF`、跨模块优化和链接去除未引用代码／折叠相同代码，关闭 Release 调试信息。
+本项目经 `/Ob0`、`/Ob1`、`/Ob2` 对比，默认选择 `/Ob1`；
+可用 `-DTTP_SIZE_INLINE_LEVEL=0|1|2` 重新测量不同内联策略。
+保留正常浮点语义、异常处理及 VC-LTL／YY-Thunks 的 XP／Win7 兼容配置。
+Actions 不编译、不运行测试；本次新增的测试仅位于本地 `rebuild/tests/dll_size_versions`，不进入发行包。
