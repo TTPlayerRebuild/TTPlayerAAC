@@ -8,7 +8,8 @@ class AudioReader final : public Reader,
                           public ReferenceDuration,
                           public AudioOffset {
     LONG references_{1};
-    bool mp4_{}, writable_{}, opened_{};
+    bool mp4_{}, writable_{}, opened_{}, live_{}, live_eof_{};
+    Bytes live_input_;
     ComPtr<IStream> stream_;
     ComPtr<Metadata> content_;
     Mp4File movie_;
@@ -99,6 +100,47 @@ class AudioReader final : public Reader,
             require(false, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
         float_format();
     }
+    void fill_live(size_t wanted) {
+        require(wanted<=65536);
+        while(!live_eof_ && live_input_.size()<wanted) {
+            BYTE bytes[8192];ULONG got{};
+            const auto count=static_cast<ULONG>(std::min(wanted-live_input_.size(),sizeof(bytes)));
+            const HRESULT hr=stream_->Read(bytes,count,&got);check(hr);require(got<=count);
+            live_input_.insert(live_input_.end(),bytes,bytes+got);
+            if(hr==S_FALSE || !got) live_eof_=true;
+        }
+    }
+    DWORD live_packet() {
+        fill_live(7);
+        if(live_input_.empty()) return 0;
+        require(live_input_.size()>=7,HRESULT_FROM_WIN32(ERROR_HANDLE_EOF));
+        const auto* h=live_input_.data();
+        require(h[0]==255 && (h[1]&0xf6)==0xf0);
+        const DWORD n=((h[3]&3)<<11)|(h[4]<<3)|(h[5]>>5);
+        require(n>=((h[1]&1)?7u:9u));
+        fill_live(n);require(live_input_.size()>=n,HRESULT_FROM_WIN32(ERROR_HANDLE_EOF));
+        return n;
+    }
+    void open_live() {
+        require(!mp4_,E_NOTIMPL);
+        live_=true;fill_live(10);
+        if(live_input_.size()>=10 && !memcmp(live_input_.data(),"ID3",3)) {
+            const auto& h=live_input_;
+            require(((h[6]|h[7]|h[8]|h[9])&128)==0);
+            size_t skip=10+(size_t(h[6])<<21)+(size_t(h[7])<<14)+(size_t(h[8])<<7)+h[9];
+            if(h[3]==4 && (h[5]&16)) skip+=10;
+            require(skip<=16*1024*1024);
+            while(skip) {
+                const auto n=std::min(skip,live_input_.size());
+                live_input_.erase(live_input_.begin(),live_input_.begin()+n);skip-=n;
+                if(skip) {fill_live(std::min<size_t>(skip,8192));require(!live_input_.empty(),HRESULT_FROM_WIN32(ERROR_HANDLE_EOF));}
+            }
+        }
+        const auto n=live_packet();require(n>0);
+        const DWORD used=raw_.raw(Bytes(live_input_.begin(),live_input_.begin()+n));
+        require(used<=n);live_input_.erase(live_input_.begin(),live_input_.begin()+used);
+        float_format();duration_=0;bitrate_=0;
+    }
     HRESULT read_raw(Buffer *target) {
         return protect([&]() -> HRESULT {
             DWORD capacity{}, n{};
@@ -111,6 +153,16 @@ class AudioReader final : public Reader,
             if (!capacity)
                 return E_INVALIDARG;
             if (pcm_position_ >= pcm_.size()) {
+                if(live_) {
+                    pcm_.clear();pcm_position_=0;
+                    // Decoder priming can consume a packet without PCM.
+                    for(unsigned attempts=0;pcm_.empty() && attempts<64;++attempts) {
+                        const auto n=live_packet();if(!n) return S_FALSE;
+                        DWORD used{};pcm_=raw_.decode(live_input_.data(),n,used);
+                        require(used>0 && used<=n);live_input_.erase(live_input_.begin(),live_input_.begin()+used);
+                    }
+                    require(!pcm_.empty());
+                } else {
                 if (raw_position_ >= end_)
                     return S_FALSE;
                 auto input = read_at(stream_.p, raw_position_,
@@ -120,6 +172,7 @@ class AudioReader final : public Reader,
                 require(consumed || !pcm_.empty());
                 raw_position_ += consumed;
                 pcm_position_ = 0;
+                }
             }
             size_t take = std::min<size_t>(capacity, pcm_.size() - pcm_position_);
             if (take)
@@ -182,7 +235,11 @@ class AudioReader final : public Reader,
             require(!opened_, E_UNEXPECTED);
             stream_ = ComPtr<IStream>(stream, true);
             STATSTG stat{};
-            check(stream->Stat(&stat, STATFLAG_NONAME));
+            const HRESULT stat_result=stream->Stat(&stat, STATFLAG_NONAME);
+            if(stat_result==E_PENDING || stat_result==E_NOTIMPL) {
+                open_live();opened_=true;return S_OK;
+            }
+            check(stat_result);
             writable_ = (stat.grfMode & 3) == STGM_READWRITE;
             if (mp4_) {
                 movie_.open(stream);
@@ -221,7 +278,7 @@ class AudioReader final : public Reader,
     HRESULT STDMETHODCALLTYPE Capabilities(DWORD *out) override {
         if (!out)
             return E_POINTER;
-        *out = 2 | (writable_ ? 4 : 0);
+        *out = live_ ? 1 : 2 | (writable_ ? 4 : 0);
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Duration(DWORD *out) override {
@@ -311,6 +368,7 @@ class AudioReader final : public Reader,
             return E_POINTER;
         if (!opened_)
             return E_UNEXPECTED;
+        if(live_) return E_NOTIMPL;
         return protect([&]() -> HRESULT {
             if (mp4_) {
                 auto time = std::uint64_t(std::max<std::int64_t>(
