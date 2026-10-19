@@ -1,6 +1,6 @@
 include(FetchContent)
-set(FAAD_VERSION "2.11.3")
-set(FAAD_ARCHIVE_SHA256 "778d6d457423ad411c83aba05007f5ea6f9d646aead71d1ce11455ea15132cb8")
+set(FAAD_VERSION "2.11.4")
+set(FAAD_ARCHIVE_SHA256 "f4d3630ffdbf17ef17e358007c91d6b51e487de0771dd2d3b3e994d4f0ad81ff")
 
 # A release source archive carries the exact upstream decoder sources here.
 # The Git repository keeps only notices and this reproducible build adaptation.

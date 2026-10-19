@@ -18,6 +18,10 @@ void AacCore::config(const Bytes &asc) {
     mp4AudioSpecificConfig info{};
     require(NeAACDecAudioSpecificConfig(const_cast<BYTE *>(asc.data()),
                                         static_cast<unsigned long>(asc.size()), &info) >= 0);
+    // FAAD2 2.11.4 correctly reports the AAC core channel count at Init2.
+    // Explicit Parametric Stereo expands that mono core to stereo output.
+    if (channels == 1 && info.ps_present_flag == 1)
+        channels = 2;
     // Original 600076E0's sixth argument reports frameLength, including LD/SBR.
     frame_length = info.frameLengthFlag ? 960 : 1024;
     if (info.objectTypeIndex == LD)
@@ -35,7 +39,7 @@ DWORD AacCore::raw(const Bytes &initial) {
     require(rate && channels && channels <= 64);
     return DWORD(used);
 }
-Bytes AacCore::decode(const BYTE *data, DWORD bytes, DWORD &consumed) {
+Bytes AacCore::decode(const BYTE *data, DWORD bytes, DWORD &consumed, bool discover_format) {
     require(handle_ && data && bytes);
     NeAACDecFrameInfo info{};
     auto *pcm = NeAACDecDecode(handle_, &info, const_cast<BYTE *>(data), bytes);
@@ -43,6 +47,11 @@ Bytes AacCore::decode(const BYTE *data, DWORD bytes, DWORD &consumed) {
     require(info.error == 0 && consumed <= bytes);
     require(info.samples <= 64 * 4096 && (!info.samples || pcm));
     if (info.samples) {
+        require(info.channels && info.channels <= 64 && info.samplerate);
+        if (discover_format) {
+            rate = info.samplerate;
+            channels = info.channels;
+        }
         require(info.samplerate == rate && info.channels == channels);
         frame_length = info.samples / channels;
     }
@@ -93,6 +102,9 @@ class AacDecoder final : public Decoder {
                 n -= 22;
             }
             core_.config(Bytes(p, p + n));
+            // The MP4 Reader probes implicit PS before publishing its format.
+            if (core_.channels == 1 && in->nChannels == 2)
+                core_.channels = 2;
             input_size_ = std::max<DWORD>(1024, in->nAvgBytesPerSec >> 4);
             output_size_ = core_.frame_length * core_.channels * 4;
             *out = {};

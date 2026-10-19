@@ -14,6 +14,6 @@
 DLL 的文件版本和产品版本与包名中的版本一致；例如 `2026.09.22p1`，Windows 四段数字版本为 `2026.9.22.1`。
 ZIP 内仅包含 `AddIn/ttp_aac.dll` 和校验该 DLL 的 `SHA256SUMS.txt`。
 Release 附件中的另一份 `SHA256SUMS.txt` 用于校验运行 ZIP 和独立源码 ZIP。
-FAAD2 已升级为 2.11.3，源码在构建时下载，不提交 Git；完整许可证和适配脚本保留在仓库。
+FAAD2 已升级为 2.11.4，源码在构建时下载，不提交 Git；完整许可证和适配脚本保留在仓库。
 `ttp_aac-版本号-source.zip` 提供实际使用的 FAAD2 解码源码及本工程构建脚本，见 [许可说明](LICENSING.md)。
 现代工具链生成的同一 DLL 兼容 XP／Win7，用户无需安装 VC++ 2012、VC-LTL 或 YY-Thunks。

@@ -25,6 +25,6 @@ class AacCore {
         if (handle_)
             NeAACDecPostSeekReset(handle_, -1);
     }
-    Bytes decode(const BYTE *data, DWORD bytes, DWORD &consumed);
+    Bytes decode(const BYTE *data, DWORD bytes, DWORD &consumed, bool discover_format = false);
 };
 } // namespace ttp::aac

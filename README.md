@@ -21,7 +21,7 @@ ADIF、AAC Main/SSR/LD 等缺少完整实测样本，不能据此声称与原 DL
 
 需要 Visual Studio C++ x86 工具、Windows SDK、CMake、Python 3。
 默认使用 VS 2026（要求 CMake 4.2+）；也可传 `-Generator 'Visual Studio 17 2022'`。
-首次配置下载带 SHA-256 校验的 FAAD2 **2.11.3**、VC-LTL 5.3.1 与 YY-Thunks 1.2.2。
+首次配置下载带 SHA-256 校验的 FAAD2 **2.11.4**、VC-LTL 5.3.1 与 YY-Thunks 1.2.2。
 FAAD2 源码不提交到 Git；仓库保留完整许可、作者信息、来源记录及构建适配脚本。
 采用现代 MSVC + VC-LTL + YY-Thunks；不需要 VS2019 Build Tools 或 `v141_xp`。
 默认按体积优化：C++17、`/O1 /Ob2 /Os /GL`、链接时优化和未使用代码移除，
@@ -51,7 +51,7 @@ VC-LTL、YY-Thunks 仍按固定版本获取。运行 ZIP 的内容不变。
 已有依赖缓存可通过 `-CMakeArguments` 传入
 `-DFETCHCONTENT_SOURCE_DIR_TTPLAYER_YY_THUNKS=...` 和
 `-DFETCHCONTENT_SOURCE_DIR_TTPLAYER_VC_LTL=...`，或通过
-`-DFETCHCONTENT_SOURCE_DIR_TTPLAYER_FAAD2=...` 指向已解压的原版 2.11.3 源码。
+`-DFETCHCONTENT_SOURCE_DIR_TTPLAYER_FAAD2=...` 指向已解压的原版 2.11.4 源码。
 兼容适配只应用于构建目录内的副本，不修改下载缓存。
 
 也可直接运行 CMake：
@@ -91,7 +91,7 @@ Actions 手动运行时始终构建、检查系统导入和打包，不运行测
 ## 来源与许可
 
 插件接口、文件处理和 Nero 适配根据原插件伪代码、机器码和运行对照重建。
-AAC 核心采用 FAAD2 **2.11.3**，保留原作者声明与 GPL-2.0-or-later 许可证；修改见
+AAC 核心采用 FAAD2 **2.11.4**，保留原作者声明与 GPL-2.0-or-later 许可证；修改见
 [ORIGIN.txt](third_party/faad2/ORIGIN.txt)。Code from FAAD2 is copyright (c) Nero AG, www.nero.com
 
 仓库根目录的 [MIT 许可证](LICENSE) 用于项目自有代码，不覆盖 FAAD2、VC-LTL、YY-Thunks。

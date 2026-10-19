@@ -28,6 +28,8 @@
 
 ## 许可证
 
+当前实现与测试：[2026-10-19 保存修正及 FAAD2 2.11.4](VALIDATION_20261019.md)。
+
 - [许可范围与对应源码分发](LICENSING.md)
 - [项目许可证](../LICENSE)
 - [FAAD2 许可证](../third_party/faad2/COPYING)与[来源及修改说明](../third_party/faad2/ORIGIN.txt)

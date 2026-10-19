@@ -23,6 +23,13 @@ inline void check(HRESULT hr) {
     if (FAILED(hr))
         throw Failure{hr};
 }
+inline void commit_stream(IStream *stream) {
+    // The original player's direct file stream writes immediately and has no
+    // Commit implementation. Preserve real flush/write errors on other streams.
+    const HRESULT hr = stream->Commit(STGC_DEFAULT);
+    if (hr != E_NOTIMPL && hr != STG_E_INVALIDFUNCTION)
+        check(hr);
+}
 template <class F> HRESULT protect(F &&f) noexcept {
     try {
         return f();
@@ -129,9 +136,16 @@ inline std::uint64_t stream_size(IStream *s) {
     return st.cbSize.QuadPart;
 }
 inline void read_exact(IStream *s, void *p, DWORD n) {
-    ULONG got{};
-    check(s->Read(p, n, &got));
-    require(got == n, STG_E_READFAULT);
+    auto *next = static_cast<BYTE *>(p);
+    while (n) {
+        ULONG got{};
+        const HRESULT hr = s->Read(next, n, &got);
+        check(hr);
+        require(got && got <= n, STG_E_READFAULT);
+        next += got;
+        n -= got;
+        require(!n || hr != S_FALSE, STG_E_READFAULT);
+    }
 }
 inline void write_exact(IStream *s, const void *p, DWORD n) {
     ULONG got{};

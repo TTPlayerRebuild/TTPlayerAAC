@@ -1,8 +1,8 @@
 # AAC 独立项目接入
 
-日期：2026-09-22。
+日期：2026-09-22；2026-10-19 更新见 [保存与 FAAD2 2.11.4 验证](VALIDATION_20261019.md)。
 
-插件源码、构建及 Actions 位于本 `ttp_aac` 独立工程中；FAAD2 2.11.3 在构建时下载并校验 SHA-256。
+插件源码、构建及 Actions 位于本 `ttp_aac` 独立工程中；当前 FAAD2 2.11.4 在构建时下载并校验 SHA-256。
 该项目不加载原 `ttp_aac.dll`；Nero 编码仍调用原本独立的三个 Nero 组件。
 
 ## 已完成
@@ -35,7 +35,7 @@ ZIP 内仅有 `AddIn/ttp_aac.dll` 和 DLL 校验文件 `SHA256SUMS.txt`。
 
 ## 明确限制
 
-分片 MP4 标签／封面只读；网络不可定位流、在线 DASH、DRM 不支持。
+分片 MP4 标签／封面只读；已支持不可定位 ADTS 流，任意网络 MP4、在线 DASH、DRM 不支持。
 ADIF、AAC Main/SSR/LD、MP3-in-MP4 等尚未完成代表性样本的逐项对照。
 不能称为所有原版分支已完全恢复。
 

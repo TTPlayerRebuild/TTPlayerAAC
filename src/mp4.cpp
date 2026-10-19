@@ -624,13 +624,9 @@ void Mp4File::save(IStream *stream) {
     // one as free. Unknown children remain byte-for-byte intact.
     require(!fragmented, E_ACCESSDENIED);
     for (auto [at, size] : zero_size_boxes_) {
+        (void)at;
         require(size <= MAXDWORD, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
-        Bytes fixed;
-        put32(fixed, DWORD(size));
-        seek(stream, at);
-        write_exact(stream, fixed.data(), 4);
     }
-    zero_size_boxes_.clear();
     Bytes items;
     auto old = ilst_box(moov_);
     if (old)
@@ -741,38 +737,64 @@ void Mp4File::save(IStream *stream) {
         append(body, box(cc("udta"), newmeta));
     Bytes updated = box(cc("moov"), body);
     auto size = stream_size(stream);
-    require(size >= file_size_, STG_E_REVERTED);
-    seek(stream, size);
-    bool retiring = false;
-    try {
-        write_exact(stream, updated.data(), DWORD(updated.size()));
-        check(stream->Commit(STGC_DEFAULT));
-        seek(stream, moov_offset_ + 4);
-        retiring = true;
-        const BYTE free_type[] = {'f', 'r', 'e', 'e'};
-        write_exact(stream, free_type, 4);
-        check(stream->Commit(STGC_DEFAULT));
-    } catch (...) {
-        // Keep an intact moov if a write/commit fails midway. Only truncate the
-        // appended copy after restoring the original header successfully.
-        bool restored = !retiring;
-        if (retiring)
-            try {
-                seek(stream, moov_offset_ + 4);
-                const BYTE type[] = {'m', 'o', 'o', 'v'};
-                write_exact(stream, type, 4);
-                check(stream->Commit(STGC_DEFAULT));
-                restored = true;
-            } catch (...) {
-            }
-        if (restored) {
-            ULARGE_INTEGER original{};
-            original.QuadPart = size;
-            stream->SetSize(original);
-            stream->Commit(STGC_DEFAULT);
+    require(size == file_size_, STG_E_REVERTED);
+    require(updated.size() <= MAXDWORD, E_OUTOFMEMORY);
+    // An EOF-sized free box remains parseable even after a short body write.
+    // Rollback can retire it without SetSize (some original host streams cannot
+    // truncate). Never append a second active moov before its body is complete.
+    const BYTE vacant[] = {0, 0, 0, 0, 'f', 'r', 'e', 'e'};
+    const BYTE active[] = {'m', 'o', 'o', 'v'};
+    const BYTE inactive[] = {'f', 'r', 'e', 'e'};
+    bool appending = false, retiring = false;
+    size_t normalizing = 0;
+    const HRESULT result = protect([&]() -> HRESULT {
+        // Normalize size=0 only after all metadata validation/allocation. These
+        // sizes otherwise swallow the appended index into an existing box.
+        for (auto [at, length] : zero_size_boxes_) {
+            ++normalizing;
+            Bytes fixed; put32(fixed, DWORD(length));
+            seek(stream, at); write_exact(stream, fixed.data(), 4);
         }
-        throw;
+        seek(stream, size); appending = true;
+        write_exact(stream, vacant, sizeof(vacant));
+        write_exact(stream, updated.data() + 8, DWORD(updated.size() - 8));
+        seek(stream, size); write_exact(stream, updated.data(), 4);
+        commit_stream(stream);
+        seek(stream, size + 4); write_exact(stream, active, 4);
+        seek(stream, moov_offset_ + 4); retiring = true;
+        write_exact(stream, inactive, 4);
+        commit_stream(stream);
+        return S_OK;
+    });
+    if (FAILED(result)) {
+        HRESULT recovery = S_OK;
+        auto recover = [&](auto &&operation) {
+            const HRESULT hr = protect([&]() -> HRESULT { operation(); return S_OK; });
+            if (FAILED(hr) && SUCCEEDED(recovery)) recovery = hr;
+        };
+        if (retiring)
+            recover([&] { seek(stream, moov_offset_ + 4); write_exact(stream, active, 4); });
+        if (appending) {
+            recover([&] { seek(stream, size); write_exact(stream, vacant, sizeof(vacant)); });
+            // Shrinking is an optimization, not a prerequisite for recovery.
+            // If it fails, the unused tail is a valid EOF-sized free box.
+            if (SUCCEEDED(recovery)) {
+                ULARGE_INTEGER original{}; original.QuadPart = size;
+                (void)stream->SetSize(original);
+            }
+        } else {
+            // No tail exists yet: restore any partially normalized headers.
+            const BYTE zero[4]{};
+            for (size_t i = 0; i < normalizing; ++i)
+                recover([&] { seek(stream, zero_size_boxes_[i].first); write_exact(stream, zero, 4); });
+        }
+        // Do not report success if restoring a header itself failed. A real
+        // persistent device failure cannot be made atomic by this legacy ABI.
+        if (FAILED(recovery)) throw Failure{STG_E_REVERTED};
+        (void)protect([&]() -> HRESULT { commit_stream(stream); return S_OK; });
+        throw Failure{result};
     }
+    zero_size_boxes_.clear();
     moov_offset_ = size;
     moov_ = std::move(updated);
     file_size_ = size + moov_.size();

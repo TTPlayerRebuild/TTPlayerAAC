@@ -1,6 +1,6 @@
-Source: https://codeload.github.com/knik0/faad2/zip/refs/tags/2.11.3
-Archive SHA-256: 778d6d457423ad411c83aba05007f5ea6f9d646aead71d1ce11455ea15132cb8
-Tag: 2.11.3
+Source: https://codeload.github.com/knik0/faad2/zip/refs/tags/2.11.4
+Archive SHA-256: f4d3630ffdbf17ef17e358007c91d6b51e487de0771dd2d3b3e994d4f0ad81ff
+Tag: 2.11.4
 Scope: decoder C sources and headers, downloaded during CMake configuration.
 The Git repository retains COPYING, AUTHORS and this origin/modification record.
 cmake/faad2.cmake verifies the archive SHA-256 and adapts a build-local copy.
@@ -18,4 +18,4 @@ Build: x86, floating-point output, APPLY_DRC=1, /O1 /Ob2 /Os /GL,
        /fp:precise /arch:SSE2, VC-LTL 5.3.1 and YY-Thunks 1.2.2.
 The wrapper derives original NeAACDecInit2's additional frame-length result
 from AudioSpecificConfig, without changing the public upstream decoder ABI.
-PCM validation uses the 2.11.3 baseline; it is not bit-identical to FAAD2 2.7.
+PCM validation uses the 2.11.4 baseline; it is not bit-identical to FAAD2 2.7.

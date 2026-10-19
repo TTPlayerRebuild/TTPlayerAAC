@@ -6,9 +6,12 @@ class AudioReader final : public Reader,
                           public Metadata,
                           public Thumbnail,
                           public ReferenceDuration,
-                          public AudioOffset {
+                          public AudioOffset,
+                          public MetadataCommit {
     LONG references_{1};
     bool mp4_{}, writable_{}, opened_{}, live_{}, live_eof_{};
+    bool dirty_{}, committed_{};
+    HRESULT commit_result_{S_OK};
     Bytes live_input_;
     ComPtr<IStream> stream_;
     ComPtr<Metadata> content_;
@@ -57,6 +60,7 @@ class AudioReader final : public Reader,
         }
         require(begin_ < end_);
         auto initial = read_at(stream_.p, begin_, size_t(std::min<std::uint64_t>(65536, end_ - begin_)));
+        require(initial.size() >= 2);
         DWORD skip = raw_.raw(initial);
         raw_position_ = begin_ + skip;
         if (initial[0] == 0xff && (initial[1] & 0xf6) == 0xf0) {
@@ -98,6 +102,15 @@ class AudioReader final : public Reader,
             duration_ = bitrate_ ? dword((end_ - begin_) * 8000 / bitrate_) : 1000;
         } else
             require(false, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+        // ADTS may signal PS only in the first audio frames. Discover the
+        // output format before the host opens its device, retaining all PCM.
+        for (unsigned attempt = 0; pcm_.empty() && raw_position_ < end_ && attempt < 64; ++attempt) {
+            auto bytes = read_at(stream_.p, raw_position_, size_t(std::min<std::uint64_t>(65536, end_ - raw_position_)));
+            DWORD used{};
+            pcm_ = raw_.decode(bytes.data(), DWORD(bytes.size()), used, true);
+            require(used > 0 && used <= bytes.size());
+            raw_position_ += used;
+        }
         float_format();
     }
     void fill_live(size_t wanted) {
@@ -139,6 +152,14 @@ class AudioReader final : public Reader,
         const auto n=live_packet();require(n>0);
         const DWORD used=raw_.raw(Bytes(live_input_.begin(),live_input_.begin()+n));
         require(used<=n);live_input_.erase(live_input_.begin(),live_input_.begin()+used);
+        for (unsigned attempt = 0; pcm_.empty() && attempt < 64; ++attempt) {
+            const auto count = live_packet();
+            if (!count) break;
+            DWORD consumed{};
+            pcm_ = raw_.decode(live_input_.data(), count, consumed, true);
+            require(consumed > 0 && consumed <= count);
+            live_input_.erase(live_input_.begin(), live_input_.begin() + consumed);
+        }
         float_format();duration_=0;bitrate_=0;
     }
     HRESULT read_raw(Buffer *target) {
@@ -188,20 +209,19 @@ class AudioReader final : public Reader,
             require(mp4_ && writable_, E_ACCESSDENIED);
             require(pic->size >= sizeof(Picture) && pic->data && pic->bytes && pic->bytes <= 60000,
                     E_INVALIDARG);
-            Bytes previous = movie_.cover;
+            require(!committed_, E_UNEXPECTED);
             movie_.cover.assign(pic->data, pic->data + pic->bytes);
-            try {
-                movie_.save(stream_.p);
-            } catch (...) {
-                movie_.cover = std::move(previous);
-                throw;
-            }
+            dirty_ = true;
             return S_OK;
         });
     }
 
   public:
     explicit AudioReader(bool mp4) : mp4_(mp4) {}
+    ~AudioReader() {
+        if (mp4_ && FAILED(Commit()))
+            OutputDebugStringW(L"ttp_aac: metadata save failed; original moov recovery attempted.\n");
+    }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
         if (!out)
             return E_POINTER;
@@ -216,6 +236,8 @@ class AudioReader final : public Reader,
             *out = static_cast<ReferenceDuration *>(this);
         else if (same(iid, iid_audio_offset) && mp4_)
             *out = static_cast<AudioOffset *>(this);
+        else if (same(iid, iid_metadata_commit) && mp4_)
+            *out = static_cast<MetadataCommit *>(this);
         else
             return E_NOINTERFACE;
         AddRef();
@@ -228,11 +250,11 @@ class AudioReader final : public Reader,
             delete this;
         return n;
     }
-    HRESULT STDMETHODCALLTYPE Open(IStream *stream, DWORD) override {
+    HRESULT STDMETHODCALLTYPE Open(IStream *stream, DWORD flags) override {
         if (!stream)
             return E_POINTER;
         return protect([&]() -> HRESULT {
-            require(!opened_, E_UNEXPECTED);
+            require(!opened_ && !committed_, E_UNEXPECTED);
             stream_ = ComPtr<IStream>(stream, true);
             STATSTG stat{};
             const HRESULT stat_result=stream->Stat(&stat, STATFLAG_NONAME);
@@ -240,12 +262,22 @@ class AudioReader final : public Reader,
                 open_live();opened_=true;return S_OK;
             }
             check(stat_result);
-            writable_ = (stat.grfMode & 3) == STGM_READWRITE;
+            writable_ = !(flags & 1) && (stat.grfMode & 3) == STGM_READWRITE;
             if (mp4_) {
                 movie_.open(stream);
                 if (movie_.codec == aac_subtype.Data1) {
                     AacCore inspect;
                     inspect.config(movie_.asc);
+                    // Resolve implicit SBR/PS too; container sample-entry
+                    // channels alone do not distinguish HE mono from HEv2.
+                    for (size_t i = 0; i < movie_.samples.size() && i < 64; ++i) {
+                        const auto &sample = movie_.samples[i];
+                        auto bytes = read_at(stream, sample.offset, sample.size);
+                        DWORD used{};
+                        if (!inspect.decode(bytes.data(), DWORD(bytes.size()), used, true).empty()) break;
+                    }
+                    movie_.channels = inspect.channels;
+                    movie_.rate = inspect.rate;
                 }
                 format_.assign(movie_.asc.empty() ? sizeof(WAVEFORMATEX)
                                                   : sizeof(WAVEFORMATEXTENSIBLE) + movie_.asc.size(),
@@ -284,7 +316,7 @@ class AudioReader final : public Reader,
     HRESULT STDMETHODCALLTYPE Duration(DWORD *out) override {
         if (!out)
             return E_POINTER;
-        *out = duration_;
+        *out = duration_ ? duration_ : reference_duration_;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Format(WAVEFORMATEX **out) override {
@@ -340,6 +372,7 @@ class AudioReader final : public Reader,
     HRESULT STDMETHODCALLTYPE Start() override { return S_OK; }
     HRESULT STDMETHODCALLTYPE Stop() override { return S_OK; }
     HRESULT STDMETHODCALLTYPE Read(Buffer *target) override {
+        if (committed_) return E_UNEXPECTED;
         if (!target)
             return E_POINTER;
         if (!opened_)
@@ -364,6 +397,7 @@ class AudioReader final : public Reader,
         });
     }
     HRESULT STDMETHODCALLTYPE Seek(DWORD *position) override {
+        if (committed_) return E_UNEXPECTED;
         if (!position)
             return E_POINTER;
         if (!opened_)
@@ -409,6 +443,8 @@ class AudioReader final : public Reader,
                 auto initial =
                     read_at(stream_.p, begin_, size_t(std::min<std::uint64_t>(65536, end_ - begin_)));
                 raw_position_ = begin_ + raw_.raw(initial);
+                raw_.channels = static_cast<unsigned char>(wave().nChannels);
+                raw_.rate = wave().nSamplesPerSec;
                 std::uint64_t target = std::uint64_t(*position) * raw_.rate / 1000, decoded{};
                 while (decoded < target && raw_position_ < end_) {
                     auto input = read_at(stream_.p, raw_position_,
@@ -472,17 +508,13 @@ class AudioReader final : public Reader,
             return E_POINTER;
         if (!writable_)
             return E_ACCESSDENIED;
+        if (committed_)
+            return E_UNEXPECTED;
         if (!mp4_)
             return content_ ? content_->Set(name, value) : E_NOINTERFACE;
         return protect([&]() -> HRESULT {
-            auto backup = movie_.tags;
             movie_.set_tag(name, value ? value : L"");
-            try {
-                movie_.save(stream_.p);
-            } catch (...) {
-                movie_.tags = std::move(backup);
-                throw;
-            }
+            dirty_ = true;
             return S_OK;
         });
     }
@@ -532,16 +564,26 @@ class AudioReader final : public Reader,
             return E_FAIL;
         if (!writable_)
             return E_ACCESSDENIED;
+        if (committed_)
+            return E_UNEXPECTED;
         return protect([&]() -> HRESULT {
-            auto previous = std::move(movie_.cover);
-            try {
+            movie_.cover.clear();
+            dirty_ = true;
+            return S_OK;
+        });
+    }
+    HRESULT STDMETHODCALLTYPE Commit() override {
+        if (committed_) return commit_result_;
+        committed_ = true;
+        commit_result_ = protect([&]() -> HRESULT {
+            if (dirty_) {
+                require(mp4_ && writable_ && stream_, E_ACCESSDENIED);
                 movie_.save(stream_.p);
-            } catch (...) {
-                movie_.cover = std::move(previous);
-                throw;
+                dirty_ = false;
             }
             return S_OK;
         });
+        return commit_result_;
     }
     HRESULT STDMETHODCALLTYPE SetReferenceDuration(DWORD value) override {
         reference_duration_ = value;
