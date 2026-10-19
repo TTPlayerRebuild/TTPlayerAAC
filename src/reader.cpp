@@ -1,3 +1,4 @@
+#include "ttpcomm/audio_format_probe_impl.h"
 #include "decoder.h"
 #include "mp4.h"
 
@@ -7,7 +8,7 @@ class AudioReader final : public Reader,
                           public Thumbnail,
                           public ReferenceDuration,
                           public AudioOffset,
-                          public MetadataCommit {
+                          public MetadataCommit, public ttp::format::InfoSupport {
     LONG references_{1};
     bool mp4_{}, writable_{}, opened_{}, live_{}, live_eof_{};
     bool dirty_{}, committed_{};
@@ -223,6 +224,9 @@ class AudioReader final : public Reader,
             OutputDebugStringW(L"ttp_aac: metadata save failed; original moov recovery attempted.\n");
     }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
+        if (!out) return E_POINTER;
+        if (IsEqualIID(iid, ttp::format::iid_info)) { *out=static_cast<ttp::format::SourceInfo*>(this); AddRef(); return S_OK; }
+
         if (!out)
             return E_POINTER;
         *out = nullptr;
@@ -250,7 +254,14 @@ class AudioReader final : public Reader,
             delete this;
         return n;
     }
-    HRESULT STDMETHODCALLTYPE Open(IStream *stream, DWORD flags) override {
+    HRESULT STDMETHODCALLTYPE Open(IStream* probe_stream, DWORD probe_flags) override {
+        const auto probed = PrepareFormatInfo(probe_stream, mp4_ ? ttp::format::Mp4 : ttp::format::Aac);
+        if (FAILED(probed)) return probed;
+        const auto opened = OpenImpl(probe_stream, probe_flags);
+        if (opened == S_OK) { SetSourceCodec(mp4_ && movie_.codec == WAVE_FORMAT_MPEGLAYER3 ? "mp3" : "aac"); }
+        return CompleteFormatInfo(opened);
+    }
+    HRESULT OpenImpl(IStream *stream, DWORD flags) {
         if (!stream)
             return E_POINTER;
         return protect([&]() -> HRESULT {

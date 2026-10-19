@@ -1,3 +1,4 @@
+#include "ttpcomm/audio_format_probe_impl.h"
 #include "common.h"
 
 namespace ttp::aac {
@@ -35,7 +36,19 @@ template <class Interface> class FactoryBase : public Interface {
   protected:
     virtual ~FactoryBase() = default; // after the recovered public slots
 };
-class ReaderFactory final : public FactoryBase<ReaderCreator> {
+class ReaderFactory final : public FactoryBase<ReaderCreator>, public ttp::format::ProbeSupport {
+protected:
+    DWORD ProbeFamilies() const noexcept override { return mp4_ ? ttp::format::Mp4 : ttp::format::Aac; }
+public:
+    ULONG STDMETHODCALLTYPE AddRef() override { return FactoryBase<ReaderCreator>::AddRef(); }
+    ULONG STDMETHODCALLTYPE Release() override { return FactoryBase<ReaderCreator>::Release(); }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER;
+        if (IsEqualIID(iid, ttp::format::iid_probe)) { *out=static_cast<ttp::format::Probe*>(this); AddRef(); return S_OK; }
+        return FactoryBase<ReaderCreator>::QueryInterface(iid,out);
+    }
+private:
+
     bool mp4_;
 
   public:
