@@ -617,6 +617,112 @@ void Mp4File::open(IStream *stream) {
     duration_ms = milliseconds(end, timescale);
     bitrate = duration_ms ? dword(total * 8000 / duration_ms) : 0;
     read_tags();
+    if (codec == 0x43414146 && !samples.empty()) {
+        auto mvhd = child(moov_, root, cc("mvhd"));
+        if (mvhd) {
+            const auto* p = data(moov_, mvhd, 4);
+            if (p[0] <= 1)
+                edit_scale = be32(data(moov_, mvhd, p[0] ? 24 : 16) + (p[0] ? 20 : 12));
+        }
+        std::uint64_t edit_duration{};
+        const auto coded = add(samples.back().time, samples.back().duration);
+        uint64_t presented{};
+        bool continuous = true;
+        uint64_t expected_time{};
+        for (const auto& s : samples) {
+            if (s.time != expected_time || s.composition) continuous = false;
+            expected_time = add(s.time, s.duration);
+            const auto presentation_end = s.presentation_end();
+            if (presentation_end > 0) presented = std::max(presented, uint64_t(presentation_end));
+        }
+        for (auto track : boxes(moov_, root.body(), root.end())) {
+            if (track.type != cc("trak")) continue;
+            auto tkhd = child(moov_, track, cc("tkhd"));
+            if (!tkhd) continue;
+            auto* p = data(moov_, tkhd, 4);
+            if (p[0] > 1) continue;
+            if (be32(data(moov_, tkhd, p[0] ? 24 : 16) + (p[0] ? 20 : 12)) != track_id) continue;
+            auto elst = child(moov_, child(moov_, track, cc("edts")), cc("elst"));
+            if (!elst) break;
+            p = data(moov_, elst, 8);
+            require(p[0] <= 1, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+            const auto count = be32(p + 4);
+            require(count <= 4096 && (!count || edit_scale));
+            const bool v1 = p[0] != 0;
+            const size_t stride = v1 ? 20 : 12;
+            p = data(moov_, elst, size_t(count) * stride, 8);
+            for (DWORD i = 0; i < count; ++i, p += stride) {
+                const auto length = v1 ? be64(p) : be32(p);
+                const auto begin = v1 ? be64(p + 8) : be32(p + 4);
+                const bool empty = begin == (v1 ? UINT64_MAX : UINT32_MAX);
+                require(be32(p + (v1 ? 16 : 8)) == 0x10000,
+                        HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+                require(empty || begin <= (v1 ? uint64_t(INT64_MAX) : uint64_t(INT32_MAX)));
+                const bool to_end = fragmented && count == 1 && !empty && !length;
+                if (!length && !to_end) continue;
+                if (!empty) {
+                    require(begin < presented && length <= UINT64_MAX / timescale);
+                    // A movie clock tick may round the final edit beyond the
+                    // last media tick. No larger overrun is accepted.
+                    require(length * timescale / edit_scale <=
+                            add(presented - begin, uint64_t(timescale / edit_scale) + 1));
+                }
+                edit_duration = add(edit_duration, length);
+                edits.push_back({empty ? 0 : begin, length, empty, to_end});
+            }
+            require(!count || !edits.empty());
+            break;
+        }
+        // A multi-part timeline (including empty edits) is authoritative.
+        // A whole-file iTunSMPB must not erase cuts, repeats, or leading silence.
+        const bool single_range = continuous && !fragmented &&
+            (edits.empty() || (edits.size() == 1 && !edits.front().empty));
+        if (const auto* smpb = single_range ? tag("iTunSMPB") : nullptr) {
+            unsigned long long reserved{}, delay{}, padding{}, length{};
+            if (swscanf_s(smpb->value.c_str(), L"%llx %llx %llx %llx", &reserved,
+                          &delay, &padding, &length) == 4 && length &&
+                delay <= UINT32_MAX && padding <= UINT32_MAX &&
+                length <= UINT64_MAX-delay-padding) {
+                if (rate && coded <= UINT64_MAX/rate &&
+                    delay+length <= coded*rate/timescale) {
+                    bool same_range = edits.empty();
+                    if (!same_range && edits.front().begin <= UINT64_MAX / rate &&
+                        edits.front().length <= UINT64_MAX / rate) {
+                        const auto start = edits.front().begin * rate / timescale;
+                        const auto count = edits.front().length * rate / edit_scale;
+                        const auto tolerance = uint64_t(rate / edit_scale) + 1;
+                        same_range = (start > delay ? start - delay : delay - start) <= tolerance &&
+                                     (count > length ? count - length : length - count) <= tolerance;
+                    }
+                    if (same_range) {
+                        gapless = true; trim_begin = delay; trim_length = length;
+                        trim_begin_scale = trim_length_scale = rate;
+                    }
+                }
+            }
+        }
+        // With no edit, fragmented timestamps still define real gaps/offsets.
+        // Keep classic Nero's no-edit ctts compatibility path unchanged.
+        if (fragmented && edits.empty() && !continuous)
+            edits.push_back({0, 0, false, true});
+        if (gapless) {
+            edits.clear();
+            duration_ms = milliseconds(trim_length, trim_length_scale);
+        } else if (!edits.empty()) {
+            // AAC packets keep decode order. Presentation gaps are silence;
+            // overlapping/reordered composition intervals require a separate
+            // mixing/reordering policy and are deliberately not guessed.
+            int64_t previous_end = INT64_MIN;
+            for (const auto& sample : samples) {
+                require(sample.presentation() >= previous_end,
+                        HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+                previous_end = sample.presentation_end();
+            }
+            duration_ms = edits.front().to_end
+                ? milliseconds(presented - edits.front().begin, timescale)
+                : milliseconds(edit_duration, edit_scale);
+        }
+    }
 }
 
 void Mp4File::save(IStream *stream) {

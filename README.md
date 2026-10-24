@@ -1,5 +1,9 @@
 # ttp_aac
 
+最新补全与验收：[2026-10-24](docs/COMPLETION_20261024.md)。
+后续补全：[多段／空编辑列表及精确定位](docs/EDIT_LIST_COMPLETION_20261024.md)。
+最新时间轴扩展：[2026-10-25 composition offset、分片编辑与媒体空隙](docs/PRESENTATION_TIMELINE_20261025.md)。
+
 TTPlayer 重建版的独立 AAC／MP4 插件工程。
 DLL 文件／产品版本与发行包统一采用 Actions 的北京时间日期及同日补丁编号。
 插件源码、构建脚本和发行包位于本工程；FAAD2 解码核心在构建时下载固定版本，运行时不加载原 `ttp_aac.dll`。

@@ -56,8 +56,17 @@ Bytes AacCore::decode(const BYTE *data, DWORD bytes, DWORD &consumed, bool disco
         frame_length = info.samples / channels;
     }
     Bytes result(info.samples * sizeof(float));
-    if (!result.empty())
-        std::memcpy(result.data(), pcm, result.size());
+    if (!result.empty()) {
+        // FAAD reports MPEG order. Sort by the Windows speaker bits before
+        // exposing PCM, including PCE layouts rather than guessing by count.
+        constexpr DWORD bits[]{0,4,1,2,0x200,0x400,0x10,0x20,0x100,8};
+        std::vector<std::pair<DWORD,unsigned>> order;
+        DWORD mask{};
+        for(unsigned c=0;c<info.channels;++c){const auto pos=info.channel_position[c];require(pos>0&&pos<10,E_NOTIMPL);const auto bit=bits[pos];require(!(mask&bit),E_NOTIMPL);mask|=bit;order.push_back({bit,c});}
+        std::sort(order.begin(),order.end());channel_mask=mask;
+        const auto* source=static_cast<const float*>(pcm);auto* dest=reinterpret_cast<float*>(result.data());
+        for(size_t i=0;i<info.samples;i+=info.channels)for(unsigned c=0;c<info.channels;++c)dest[i+c]=source[i+order[c].second];
+    }
     return result;
 }
 

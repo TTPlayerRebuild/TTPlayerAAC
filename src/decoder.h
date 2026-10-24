@@ -9,6 +9,7 @@ class AacCore {
     unsigned long rate{};
     unsigned char channels{};
     DWORD frame_length{1024};
+    DWORD channel_mask{};
     AacCore() = default;
     ~AacCore() { close(); }
     AacCore(const AacCore &) = delete;

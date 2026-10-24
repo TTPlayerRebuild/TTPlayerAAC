@@ -6,6 +6,8 @@
 - [独立构建与实现状态](AAC_PLUGIN_IMPLEMENTATION.md)
 - [DLL 与 Actions 日期构建版本](BUILD_VERSION.md)
 - [插件恢复记录、接口映射与支持范围](RECONSTRUCTION.md)
+- [2026-10-24 多段／空编辑列表及精确定位](EDIT_LIST_COMPLETION_20261024.md)
+- [2026-10-25 呈现时间、分片编辑及媒体时间空隙](PRESENTATION_TIMELINE_20261025.md)
 
 ## 原插件分析
 

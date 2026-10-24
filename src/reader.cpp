@@ -1,6 +1,7 @@
 #include "ttpcomm/audio_format_probe_impl.h"
 #include "decoder.h"
 #include "mp4.h"
+#include "ttpcomm/pcm_format.h"
 
 namespace ttp::aac {
 class AudioReader final : public Reader,
@@ -26,6 +27,98 @@ class AudioReader final : public Reader,
     Picture picture_{sizeof(Picture), L"", L"", 0, nullptr, 3};
     std::wstring mime_;
     DWORD reference_duration_{};
+    bool trimmed_pcm_{};
+    struct Segment {
+        uint64_t source{}, begin{}, end{};
+        bool silent{};
+    };
+    std::vector<Segment> segments_;
+    Bytes decoded_;
+    uint64_t play_position_{}, play_length_{}, media_length_{};
+    size_t decoded_sample_{SIZE_MAX};
+    static uint64_t rescale(uint64_t ticks, DWORD from, DWORD to) {
+        require(from && to);
+        const auto whole = ticks / from, fraction = (ticks % from) * uint64_t(to) / from;
+        require(whole <= (UINT64_MAX - fraction) / to);
+        return whole * to + fraction;
+    }
+    int64_t presentation_frame(int64_t ticks) const {
+        // Floor negative times too, so a partial priming packet ending after
+        // time zero has an exact nonnegative skip into its decoded PCM.
+        const auto magnitude = ticks < 0 ? uint64_t(-(ticks + 1)) + 1 : uint64_t(ticks);
+        auto frames = rescale(magnitude, movie_.timescale, movie_.rate);
+        if (ticks < 0 && (magnitude % movie_.timescale) * movie_.rate % movie_.timescale) ++frames;
+        require(frames <= uint64_t(INT64_MAX));
+        return ticks < 0 ? -int64_t(frames) : int64_t(frames);
+    }
+    void restart_trimmed() {
+        raw_.config(movie_.asc);raw_.rate=movie_.rate;raw_.channels=BYTE(movie_.channels);
+        sample_ = 0; decoded_sample_ = SIZE_MAX; decoded_.clear();
+    }
+    bool next_trimmed() {
+        pcm_.clear(); pcm_position_ = 0;
+        const auto segment = std::lower_bound(segments_.begin(), segments_.end(), play_position_,
+            [](const Segment& s, uint64_t position) { return s.end <= position; });
+        if (segment == segments_.end()) return false;
+        auto left = segment->end - play_position_;
+        const auto source = segment->source + (play_position_ - segment->begin);
+        if (segment->silent || source >= media_length_) {
+            pcm_.assign(size_t(std::min<uint64_t>(left, 4096)) * wave().nBlockAlign, 0);
+            return true;
+        }
+        require(source <= uint64_t(INT64_MAX));
+        const auto packet = std::lower_bound(movie_.samples.begin(), movie_.samples.end(), int64_t(source),
+            [&](const Sample& s, int64_t frame) { return presentation_frame(s.presentation_end()) <= frame; });
+        require(packet != movie_.samples.end(), STG_E_READFAULT);
+        const auto begin = presentation_frame(packet->presentation());
+        if (begin > int64_t(source)) {
+            left = std::min(left, uint64_t(begin) - source);
+            pcm_.assign(size_t(std::min<uint64_t>(left, 4096)) * wave().nBlockAlign, 0);
+            return true;
+        }
+        const auto wanted = size_t(packet - movie_.samples.begin());
+        // Timestamp gaps do not reset AAC overlap. Backward/repeated edits
+        // replay compressed packets, preserving the decoder's true history.
+        if (decoded_sample_ != SIZE_MAX && wanted < decoded_sample_) restart_trimmed();
+        while (decoded_sample_ != wanted) {
+            require(sample_ < movie_.samples.size(), STG_E_READFAULT);
+            const auto& s = movie_.samples[sample_];
+            auto bytes = read_at(stream_.p, s.offset, s.size);
+            DWORD used{};
+            decoded_ = raw_.decode(bytes.data(), DWORD(bytes.size()), used);
+            require(used == bytes.size());
+            if (decoded_.empty()) {
+                // FAAD suppresses the first overlap frame. If an edit selects
+                // it, retain its media time as silence rather than shortening
+                // the track or shifting all subsequent sample coordinates.
+                require(sample_ == 0, STG_E_READFAULT);
+                const auto frames = presentation_frame(s.presentation_end()) - presentation_frame(s.presentation());
+                require(frames && frames <= 4096);
+                decoded_.assign(size_t(frames) * wave().nBlockAlign, 0);
+            }
+            decoded_sample_ = sample_++;
+        }
+        const auto packet_end = presentation_frame(packet->presentation_end());
+        const auto frames = std::min(left, uint64_t(packet_end) - source);
+        require(frames > 0);
+        const auto skip = begin < 0 ? source + uint64_t(-begin) : source - uint64_t(begin);
+        require(skip <= decoded_.size() / wave().nBlockAlign &&
+                frames <= decoded_.size() / wave().nBlockAlign - skip, STG_E_READFAULT);
+        const auto offset = size_t(skip) * wave().nBlockAlign;
+        pcm_.assign(decoded_.begin() + offset, decoded_.begin() + offset + size_t(frames) * wave().nBlockAlign);
+        return true;
+    }
+    HRESULT read_trimmed(Buffer* target) {
+        return protect([&]()->HRESULT{
+            check(target->SetLength(0));DWORD capacity{},length{};BYTE* dest{};
+            check(target->Capacity(&capacity));check(target->Data(&dest,&length));require(dest,E_POINTER);
+            require(capacity>=wave().nBlockAlign,E_INVALIDARG);
+            if(pcm_position_==pcm_.size()&&!next_trimmed())return S_FALSE;
+            auto n=std::min<size_t>(capacity,pcm_.size()-pcm_position_);n-=n%wave().nBlockAlign;
+            memcpy(dest,pcm_.data()+pcm_position_,n);pcm_position_+=n;play_position_+=n/wave().nBlockAlign;
+            return target->SetLength(DWORD(n));
+        });
+    }
     const WAVEFORMATEX &wave() const { return *reinterpret_cast<const WAVEFORMATEX *>(format_.data()); }
     void float_format() {
         format_.assign(sizeof(WAVEFORMATEX), 0);
@@ -289,6 +382,7 @@ class AudioReader final : public Reader,
                     }
                     movie_.channels = inspect.channels;
                     movie_.rate = inspect.rate;
+                    raw_.channel_mask = inspect.channel_mask;
                 }
                 format_.assign(movie_.asc.empty() ? sizeof(WAVEFORMATEX)
                                                   : sizeof(WAVEFORMATEXTENSIBLE) + movie_.asc.size(),
@@ -312,6 +406,33 @@ class AudioReader final : public Reader,
                 bitrate_ = movie_.bitrate;
                 buffer_size_ = std::max<DWORD>(movie_.max_packet, 1024);
                 writable_ = writable_ && !movie_.fragmented;
+                if ((movie_.gapless || !movie_.edits.empty()) && movie_.codec == aac_subtype.Data1) {
+                    trimmed_pcm_ = true;
+                    const auto& last = movie_.samples.back();
+                    const auto media_end = presentation_frame(last.presentation_end());
+                    media_length_ = media_end > 0 ? uint64_t(media_end) : 0;
+                    if (movie_.gapless) {
+                        const auto begin = rescale(movie_.trim_begin, movie_.trim_begin_scale, movie_.rate);
+                        play_length_ = rescale(movie_.trim_length, movie_.trim_length_scale, movie_.rate);
+                        require(play_length_ && begin <= media_length_ && play_length_ <= media_length_ - begin);
+                        segments_.push_back({begin, 0, play_length_, false});
+                    } else {
+                        uint64_t ticks{};
+                        for (const auto& edit : movie_.edits) {
+                            require(edit.length <= UINT64_MAX - ticks);
+                            const auto begin = rescale(edit.begin, movie_.timescale, movie_.rate);
+                            ticks += edit.length;
+                            const auto end = edit.to_end ? media_length_ - begin
+                                : rescale(ticks, movie_.edit_scale, movie_.rate);
+                            require(edit.empty || (begin <= media_length_ && end - play_length_ <= UINT64_MAX - begin));
+                            if (end != play_length_)
+                                segments_.push_back({begin, play_length_, end, edit.empty});
+                            play_length_ = end;
+                        }
+                        require(play_length_ > 0);
+                    }
+                    restart_trimmed(); float_format(); duration_ = milliseconds(play_length_, movie_.rate);
+                }
             } else
                 open_raw();
             opened_ = true;
@@ -336,6 +457,7 @@ class AudioReader final : public Reader,
         *out = nullptr;
         if (format_.empty())
             return E_UNEXPECTED;
+        if(!mp4_ || trimmed_pcm_)return ttp::pcm::copy_format(wave(),raw_.channel_mask,32,out);
         auto *p = CoTaskMemAlloc(format_.size());
         if (!p)
             return E_OUTOFMEMORY;
@@ -363,7 +485,7 @@ class AudioReader final : public Reader,
     HRESULT STDMETHODCALLTYPE BitDepth(WORD *out) override {
         if (!out)
             return E_POINTER;
-        *out = mp4_ ? 16 : 32;
+        *out = mp4_ && !trimmed_pcm_ ? 16 : 32;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetCallback(IUnknown *callback) override {
@@ -388,6 +510,7 @@ class AudioReader final : public Reader,
             return E_POINTER;
         if (!opened_)
             return E_UNEXPECTED;
+        if(trimmed_pcm_)return read_trimmed(target);
         if (!mp4_)
             return read_raw(target);
         return protect([&]() -> HRESULT {
@@ -415,6 +538,11 @@ class AudioReader final : public Reader,
             return E_UNEXPECTED;
         if(live_) return E_NOTIMPL;
         return protect([&]() -> HRESULT {
+            if(trimmed_pcm_) {
+                play_position_ = std::min<uint64_t>(uint64_t(*position) * movie_.rate / 1000, play_length_);
+                pcm_.clear(); pcm_position_ = 0;
+                *position=milliseconds(play_position_,movie_.rate);return S_OK;
+            }
             if (mp4_) {
                 auto time = std::uint64_t(std::max<std::int64_t>(
                     0, std::int64_t(std::uint64_t(*position) * movie_.timescale / 1000) + movie_.seek_bias));
