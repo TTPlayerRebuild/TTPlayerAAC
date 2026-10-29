@@ -52,6 +52,8 @@ faad_replace("libfaad/common.h"
   "  #if defined(_WIN32) && defined(_M_IX86) && !defined(__MINGW32__)\n    #ifndef HAVE_LRINTF\n    #define HAS_LRINTF\n    static INLINE long lrintf(float f)"
   "  /* TTPlayer Rebuild modification, 2026-09-22: keep x87 rounding,\n     with CRT declarations before the private MSVC helper alias. */\n  #include <math.h>\n  #if defined(_WIN32) && defined(_M_IX86) && !defined(__MINGW32__)\n    #ifndef HAVE_LRINTF\n    #define HAS_LRINTF\n    #define lrintf faad_lrintf\n    static INLINE long faad_lrintf(float f)")
 
+include("${CMAKE_CURRENT_LIST_DIR}/faad2_compat.cmake")
+
 file(GLOB FAAD_SOURCES CONFIGURE_DEPENDS "${FAAD_PATCHED_DIR}/libfaad/*.c")
 add_library(ttp_faad STATIC ${FAAD_SOURCES})
 target_include_directories(ttp_faad PUBLIC "${FAAD_PATCHED_DIR}/include" PRIVATE "${FAAD_PATCHED_DIR}/libfaad")

@@ -19,3 +19,25 @@ Build: x86, floating-point output, APPLY_DRC=1, /O1 /Ob2 /Os /GL,
 The wrapper derives original NeAACDecInit2's additional frame-length result
 from AudioSpecificConfig, without changing the public upstream decoder ABI.
 PCM validation uses the 2.11.4 baseline; it is not bit-identical to FAAD2 2.7.
+
+Local compatibility fixes (TTPlayer Rebuild, 2026-10-29):
+cmake/faad2_compat.cmake applies checked replacements to the copied build sources;
+the pinned upstream archive and shared download cache are never changed.
+- libfaad/syntax.c: limit the two ID_FIL/SBR look-aheads to ordinary, non-ER
+  raw_data_block syntax. ER AAC's fixed channel-element sequence must not parse
+  access-unit tail bits as an ordinary fill_element. This fixes AAC LD reporting
+  bytesconsumed beyond the packet boundary; the wrapper's bounds check remains.
+- libfaad/common.c, common.h and tns.c: use the LD TNS bandwidth limits from
+  ISO/IEC 14496-3:2009 section 4.6.17.2.5, tables 4.172/4.173, including the
+  different 480/512-sample limits. Pass frame length through the private helper.
+  The public FAAD ABI is unchanged. The FATE er_ad6000np_44.s16 regression file
+  and independent FFmpeg decoding corroborate the corrected LD output; the
+  previous LC/Main/HE/LTP regression PCM remains the reference for those modes.
+- libfaad/mp4.c: retain explicit 24-bit ASC frequencies and normalize them only
+  when exactly equal to an existing supported frequency-table entry. SBR output
+  also retains exact doubles of supported core rates (for example 192 kHz from
+  a 96 kHz core), including the sync-extension form. Reject
+  missing SBR presence/rate bits rather than interpreting zero-filled bits as
+  a complete configuration. Unsupported arbitrary rates are not rounded.
+The LD correction intentionally changes output from the original FAAD2 2.7
+implementation; it is a format-correctness fix, not a bit-exact old-decoder mode.

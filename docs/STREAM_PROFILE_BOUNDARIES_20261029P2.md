@@ -1,5 +1,7 @@
 # AAC 部分读取取消、MP4 提示字段与历史 Profile 验证
 
+后续 LD 消费计数／TNS、显式频率与高输出率 SBR 修复见 [p3 LD／ASC](LD_ASC_20261029P3.md)，ADIF 与分片写回见 [ADIF](ADIF_STREAMS_20261029P3.md)、[分片保存](FRAGMENT_METADATA_SAVE_20261029P3.md)。下文保留 p2 的历史观察，不代表这些问题仍全部未解决。
+
 日期：2026-10-29；构建版本：`2026.10.29p2`。本轮接续 [呈现时间与分片编辑验收](PRESENTATION_TIMELINE_20261025.md)，修复两处已经复现的问题，补充 Main／LTP／LD 的实际样本证据。没有修改 FAAD2 2.11.4、原始 DLL 或用户音频。
 
 ## 1. 实时 ADTS 在部分读取后取消会丢失数据

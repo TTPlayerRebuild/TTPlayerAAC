@@ -316,9 +316,19 @@ void Mp4File::classic(const Bytes &b) {
         if (!rate) {
             constexpr DWORD rates[]{96000, 88200, 64000, 48000, 44100, 32000,
                                     24000, 22050, 16000, 12000, 11025, 8000, 7350};
+            require((asc[0] >> 3) != 31, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
             const auto index = ((asc[0] & 7) << 1) | (asc[1] >> 7);
-            require(index < std::size(rates));
-            rate = rates[index];
+            if (index == 15) {
+                require(asc.size() >= 5);
+                const DWORD explicit_rate = (DWORD(asc[1] & 0x7f) << 17) |
+                    (DWORD(asc[2]) << 9) | (DWORD(asc[3]) << 1) | (asc[4] >> 7);
+                require(std::find(std::begin(rates), std::end(rates), explicit_rate) != std::end(rates),
+                        HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+                rate = explicit_rate;
+            } else {
+                require(index < std::size(rates));
+                rate = rates[index];
+            }
         }
         // A channel configuration of zero is a valid PCE, not an empty
         // stream. AacCore::config and the first decoded packet validate it.
@@ -562,6 +572,11 @@ void Mp4File::open(IStream *stream) {
             require(fragments.size() < max_samples);
             fragments.push_back({pos, n, type});
         }
+        if (!moov_.empty() && pos == moov_offset_ + moov_.size() + moov_padding_ &&
+            (type == cc("free") || type == cc("skip"))) {
+            moov_padding_ += n;
+            moov_padding_headers_.push_back({pos, Bytes(h.begin(), h.begin() + header)});
+        }
         pos += n;
     }
     require(!moov_.empty());
@@ -741,10 +756,9 @@ void Mp4File::open(IStream *stream) {
 }
 
 void Mp4File::save(IStream *stream) {
-    // Keep all sample offsets unchanged: append a new moov, then retire the old
-    // one as free. Unknown children remain byte-for-byte intact.
-    require(!fragmented, E_ACCESSDENIED);
-    for (auto [at, size] : zero_size_boxes_) {
+    // Classic files can append moov. Fragments must keep their initialization
+    // before moof, so only their existing metadata/padding region is replaced.
+    for (auto [at, size] : zero_size_boxes_) if (!fragmented) {
         (void)at;
         require(size <= MAXDWORD, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
     }
@@ -761,7 +775,7 @@ void Mp4File::save(IStream *stream) {
                             "com.apple.iTunes";
                 }
             }
-            if (!known)
+            if (!known && !(fragmented && (item.type == cc("free") || item.type == cc("skip"))))
                 append(items, slice(moov_, item));
         }
     for (const auto &t : tags) {
@@ -814,7 +828,7 @@ void Mp4File::save(IStream *stream) {
                 if (!inserted)
                     append(body, new_ilst);
                 inserted = true;
-            } else
+            } else if (!(fragmented && (x.type == cc("free") || x.type == cc("skip"))))
                 append(body, slice(moov_, x));
         }
         if (!inserted)
@@ -831,6 +845,21 @@ void Mp4File::save(IStream *stream) {
         newmeta = box(cc("meta"), body);
     }
     auto root = find(moov_, 0, moov_.size(), cc("moov"));
+    Box fragment_target;
+    Bytes fragment_update;
+    if (fragmented) {
+        for (auto x : boxes(moov_, root.body(), root.end())) {
+            if (oldmeta && x.at == oldmeta.at) {
+                fragment_target = x;
+                fragment_update = newmeta;
+                break;
+            }
+            if (x.type == cc("udta") &&
+                ((!oldmeta && !fragment_target) ||
+                 (oldmeta && oldmeta.at >= x.body() && oldmeta.end() <= x.end())))
+                fragment_target = x;
+        }
+    }
     Bytes body;
     bool replaced = false;
     for (auto x : boxes(moov_, root.body(), root.end())) {
@@ -843,14 +872,17 @@ void Mp4File::save(IStream *stream) {
                 if (oldmeta && y.at == oldmeta.at) {
                     append(u, newmeta);
                     replaced = true;
-                } else
+                } else if (!(fragmented && (y.type == cc("free") || y.type == cc("skip"))))
                     append(u, slice(moov_, y));
             }
             if (!oldmeta && !replaced) {
                 append(u, newmeta);
                 replaced = true;
             }
-            append(body, box(cc("udta"), u));
+            auto udta = box(cc("udta"), u);
+            if (fragmented && fragment_target && fragment_target.at == x.at)
+                fragment_update = udta;
+            append(body, udta);
         } else
             append(body, slice(moov_, x));
     }
@@ -860,6 +892,98 @@ void Mp4File::save(IStream *stream) {
     auto size = stream_size(stream);
     require(size == file_size_, STG_E_REVERTED);
     require(updated.size() <= MAXDWORD, E_OUTOFMEMORY);
+    if (fragmented) {
+        const auto children = boxes(moov_, root.body(), root.end());
+        auto region_end = [&](Box target) {
+            size_t end = target.end();
+            for (auto x : children)
+                if (x.at == end && (x.type == cc("free") || x.type == cc("skip")))
+                    end = x.end();
+            return end;
+        };
+        auto fits = [](size_t bytes, size_t capacity) {
+            return bytes <= capacity && (bytes == capacity || capacity - bytes >= 8);
+        };
+        size_t from{}, to{};
+        bool extend = false;
+        const bool extra = moov_padding_ &&
+            moov_padding_ <= 64 * 1024 * 1024 - moov_.size();
+        if (fragment_target) {
+            from = fragment_target.at;
+            to = region_end(fragment_target);
+            if (!fits(fragment_update.size(), to - from) && to == root.end() && extra) {
+                to += size_t(moov_padding_);
+                extend = true;
+            }
+        } else {
+            fragment_update = box(cc("udta"), newmeta);
+            // Use an existing root padding slot without moving any track.
+            for (auto x : children) if (x.type == cc("free") || x.type == cc("skip")) {
+                auto end = region_end(x);
+                if (fits(fragment_update.size(), end - x.at)) {
+                    from = x.at; to = end; break;
+                }
+            }
+            if (!to && extra) {
+                from = root.end(); to = from + size_t(moov_padding_); extend = true;
+            }
+        }
+        require(to >= from && fits(fragment_update.size(), to - from), STG_E_MEDIUMFULL);
+        const auto span = extend ? to : moov_.size();
+        auto original = read_at(stream, moov_offset_, span);
+        require(std::equal(moov_.begin(), moov_.end(), original.begin()), STG_E_REVERTED);
+        if (extend)
+            for (const auto& padding : moov_padding_headers_)
+                require(read_at(stream, padding.first, padding.second.size()) == padding.second,
+                        STG_E_REVERTED);
+        Bytes replacement = original;
+        std::copy(fragment_update.begin(), fragment_update.end(), replacement.begin() + from);
+        const auto vacant = from + fragment_update.size();
+        if (vacant != to) {
+            std::fill(replacement.begin() + vacant, replacement.begin() + to, BYTE(0));
+            set32(replacement, vacant, DWORD(to - vacant));
+            set32(replacement, vacant + 4, cc("free"));
+        }
+        if (extend) {
+            if (root.head == 16) {
+                set32(replacement, 8, 0); set32(replacement, 12, DWORD(span));
+            } else
+                set32(replacement, 0, DWORD(span));
+        }
+        bool writing = false;
+        const HRESULT result = protect([&]() -> HRESULT {
+            seek(stream, moov_offset_ + from); writing = true;
+            write_exact(stream, replacement.data() + from, DWORD(to - from));
+            if (extend) {
+                seek(stream, moov_offset_);
+                write_exact(stream, replacement.data(), DWORD(root.head));
+            }
+            commit_stream(stream);
+            return S_OK;
+        });
+        if (FAILED(result)) {
+            HRESULT recovery = S_OK;
+            auto restore = [&](auto &&operation) {
+                const auto hr = protect([&]() -> HRESULT { operation(); return S_OK; });
+                if (FAILED(hr) && SUCCEEDED(recovery)) recovery = hr;
+            };
+            if (writing) {
+                restore([&] { seek(stream, moov_offset_ + from);
+                    write_exact(stream, original.data() + from, DWORD(to - from)); });
+                if (extend) restore([&] { seek(stream, moov_offset_);
+                    write_exact(stream, original.data(), DWORD(root.head)); });
+                restore([&] { commit_stream(stream); });
+            }
+            if (FAILED(recovery)) throw Failure{STG_E_REVERTED};
+            throw Failure{result};
+        }
+        moov_ = std::move(replacement);
+        if (extend) {
+            moov_padding_ = 0;
+            moov_padding_headers_.clear();
+        }
+        return;
+    }
     // An EOF-sized free box remains parseable even after a short body write.
     // Rollback can retire it without SetSize (some original host streams cannot
     // truncate). Never append a second active moov before its body is complete.

@@ -11,7 +11,7 @@ class AudioReader final : public Reader,
                           public AudioOffset,
                           public MetadataCommit, public ttp::format::InfoSupport {
     LONG references_{1};
-    bool mp4_{}, writable_{}, opened_{}, live_{}, live_eof_{};
+    bool mp4_{}, writable_{}, opened_{}, live_{}, live_eof_{}, live_adif_{};
     bool dirty_{}, committed_{};
     HRESULT commit_result_{S_OK};
     Bytes live_input_;
@@ -222,6 +222,14 @@ class AudioReader final : public Reader,
         }
     }
     DWORD live_packet() {
+        if (live_adif_) {
+            // ADIF has no per-frame transport length. Supply the same bounded
+            // lookahead as local raw decoding; only consume what FAAD reports.
+            // Fill before decoding, so a cancelled short read preserves both
+            // the compressed prefix and the decoder's previous frame state.
+            fill_live(65536);
+            return DWORD(live_input_.size());
+        }
         fill_live(7);
         if(live_input_.empty()) return 0;
         require(live_input_.size()>=7,HRESULT_FROM_WIN32(ERROR_HANDLE_EOF));
@@ -247,6 +255,8 @@ class AudioReader final : public Reader,
                 if(skip) {fill_live(std::min<size_t>(skip,8192));require(!live_input_.empty(),HRESULT_FROM_WIN32(ERROR_HANDLE_EOF));}
             }
         }
+        fill_live(4);
+        live_adif_=live_input_.size()>=4 && !memcmp(live_input_.data(),"ADIF",4);
         const auto n=live_packet();require(n>0);
         const DWORD used=raw_.raw(Bytes(live_input_.begin(),live_input_.begin()+n));
         require(used<=n);live_input_.erase(live_input_.begin(),live_input_.begin()+used);
@@ -276,21 +286,26 @@ class AudioReader final : public Reader,
                     pcm_.clear();pcm_position_=0;
                     // Decoder priming can consume a packet without PCM.
                     for(unsigned attempts=0;pcm_.empty() && attempts<64;++attempts) {
-                        const auto n=live_packet();if(!n) return S_FALSE;
-                        DWORD used{};pcm_=raw_.decode(live_input_.data(),n,used);
-                        require(used>0 && used<=n);live_input_.erase(live_input_.begin(),live_input_.begin()+used);
+                        const auto packet_bytes=live_packet();if(!packet_bytes) return S_FALSE;
+                        DWORD used{};pcm_=raw_.decode(live_input_.data(),packet_bytes,used);
+                        require(used>0 && used<=packet_bytes);live_input_.erase(live_input_.begin(),live_input_.begin()+used);
                     }
                     require(!pcm_.empty());
                 } else {
-                if (raw_position_ >= end_)
-                    return S_FALSE;
-                auto input = read_at(stream_.p, raw_position_,
-                                     size_t(std::min<std::uint64_t>(65536, end_ - raw_position_)));
-                DWORD consumed{};
-                pcm_ = raw_.decode(input.data(), DWORD(input.size()), consumed);
-                require(consumed || !pcm_.empty());
-                raw_position_ += consumed;
-                pcm_position_ = 0;
+                    pcm_.clear();pcm_position_=0;
+                    // A reset decoder can consume its overlap/priming frame
+                    // without producing PCM. Keep reading instead of exposing
+                    // a successful zero-length buffer to the playback host.
+                    for(unsigned attempts=0;pcm_.empty() && attempts<64;++attempts) {
+                        if (raw_position_ >= end_) return S_FALSE;
+                        auto input = read_at(stream_.p, raw_position_,
+                            size_t(std::min<std::uint64_t>(65536, end_ - raw_position_)));
+                        DWORD consumed{};
+                        pcm_ = raw_.decode(input.data(), DWORD(input.size()), consumed);
+                        require(consumed>0);
+                        raw_position_ += consumed;
+                    }
+                    require(!pcm_.empty());
                 }
             }
             size_t take = std::min<size_t>(capacity, pcm_.size() - pcm_position_);
@@ -409,7 +424,8 @@ class AudioReader final : public Reader,
                 duration_ = movie_.duration_ms;
                 bitrate_ = movie_.bitrate;
                 buffer_size_ = std::max<DWORD>(movie_.max_packet, 1024);
-                writable_ = writable_ && !movie_.fragmented;
+                // Fragmented files can update metadata in existing padding.
+                // Commit reports insufficient space without moving media.
                 if ((movie_.gapless || !movie_.edits.empty()) && movie_.codec == aac_subtype.Data1) {
                     trimmed_pcm_ = true;
                     const auto& last = movie_.samples.back();

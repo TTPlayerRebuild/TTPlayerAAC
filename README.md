@@ -4,6 +4,8 @@
 后续补全：[多段／空编辑列表及精确定位](docs/EDIT_LIST_COMPLETION_20261024.md)。
 最新时间轴扩展：[2026-10-25 composition offset、分片编辑与媒体空隙](docs/PRESENTATION_TIMELINE_20261025.md)。
 最新边界修复：[2026-10-29 部分读取取消、Main 容器提示字段与历史 Profile 验证](docs/STREAM_PROFILE_BOUNDARIES_20261029P2.md)。
+后续 ADIF 修复：[2026.10.29p3 流读取与定位后预热](docs/ADIF_STREAMS_20261029P3.md)。
+同轮修复：[LD／显式频率与高采样率 SBR](docs/LD_ASC_20261029P3.md)、[分片标签／封面保存](docs/FRAGMENT_METADATA_SAVE_20261029P3.md)。
 
 TTPlayer 重建版的独立 AAC／MP4 插件工程。
 DLL 文件／产品版本与发行包统一采用 Actions 的北京时间日期及同日补丁编号。
@@ -12,14 +14,15 @@ DLL 文件／产品版本与发行包统一采用 Actions 的北京时间日期�
 ## 功能
 
 - 恢复原插件的 MP4 Reader、AAC Reader、AAC Decoder、Nero HE-AAC Encoder 四类接口。
-- AAC ADTS、普通 MP4/M4A，以及本地分片 MP4 的解码、时长和定位。
+- AAC ADTS／ADIF、普通 MP4/M4A，以及本地分片 MP4 的解码、时长和定位；未知长度 ADTS／ADIF 支持顺序播放。
 - 普通 MP4 的标签与 JPEG/PNG 封面读取、写入、删除；AAC 标签调用宿主 `CreateStdContent`。
 - Nero 编码、标签传递和配置入口；编码仍需原本独立的 `Aac.dll`、`aacenc32.dll`、`NeroIPP.dll`。
 - 一个 x86 DLL 同时供普通版和 XP SP3／Win7 版使用；CPU 需要 SSE2。
 
-分片 MP4 的标签／封面目前只读。在线 DASH、DRM、不可定位的网络流不在本版支持范围。
-Main 单声道 PCE／88.2 kHz 和 LTP 已有实际样本验证；Main channel coupling、部分 LD、SSR、
-显式采样率和扩展 AOT 仍有解码库限制，ADIF 与其余组合尚未完整覆盖，不能声称与原 DLL 所有分支完全一致。
+分片 MP4 的标签／封面可在现有标签区或预留空白足够时保存；容量不足明确报错，音频分片与索引不移动。
+在线 DASH、DRM、不可定位的 MP4 网络流不在本版支持范围。
+Main 单声道 PCE／88.2 kHz、LTP 及 LD 已有实际样本验证；Main channel coupling、SSR、
+表外显式采样率和扩展 AOT 仍有限制。ADIF 已覆盖部分 LC 配置，不能声称与原 DLL 所有分支完全一致。
 恢复依据、验证记录及具体限制见 [RECONSTRUCTION.md](docs/RECONSTRUCTION.md)。
 全部 AAC 分析、构建对比与兼容性记录见 [文档目录](docs/README.md)。
 
@@ -30,8 +33,8 @@ Main 单声道 PCE／88.2 kHz 和 LTP 已有实际样本验证；Main channel co
 首次配置下载带 SHA-256 校验的 FAAD2 **2.11.4**、VC-LTL 5.3.1 与 YY-Thunks 1.2.2。
 FAAD2 源码不提交到 Git；仓库保留完整许可、作者信息、来源记录及构建适配脚本。
 采用现代 MSVC + VC-LTL + YY-Thunks；不需要 VS2019 Build Tools 或 `v141_xp`。
-默认按体积优化：C++17、`/O1 /Ob2 /Os /GL`、链接时优化和未使用代码移除，
-保留 `/fp:precise`、异常处理及 SSE2。VS2026 实测 DLL 为 **361 KiB**。
+默认按体积优化：C++17、`/O1 /Ob1 /Os /GL`、链接时优化和未使用代码移除，
+保留 `/fp:precise`、异常处理及 SSE2。`2026.10.29p3` 实测 DLL 为 **393 KiB**。
 
 ```powershell
 ./build.ps1 -Package

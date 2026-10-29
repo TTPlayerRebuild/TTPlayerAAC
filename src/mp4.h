@@ -30,7 +30,8 @@ struct Edit {
 };
 class Mp4File {
     Bytes moov_;
-    std::uint64_t moov_offset_{}, file_size_{}, declared_duration_{};
+    std::uint64_t moov_offset_{}, file_size_{}, declared_duration_{}, moov_padding_{};
+    std::vector<std::pair<std::uint64_t, Bytes>> moov_padding_headers_;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> media_;
     std::map<DWORD, std::vector<DWORD>> defaults_;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> zero_size_boxes_;
