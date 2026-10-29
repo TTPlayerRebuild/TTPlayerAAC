@@ -3,6 +3,7 @@
 最新补全与验收：[2026-10-24](docs/COMPLETION_20261024.md)。
 后续补全：[多段／空编辑列表及精确定位](docs/EDIT_LIST_COMPLETION_20261024.md)。
 最新时间轴扩展：[2026-10-25 composition offset、分片编辑与媒体空隙](docs/PRESENTATION_TIMELINE_20261025.md)。
+最新边界修复：[2026-10-29 部分读取取消、Main 容器提示字段与历史 Profile 验证](docs/STREAM_PROFILE_BOUNDARIES_20261029P2.md)。
 
 TTPlayer 重建版的独立 AAC／MP4 插件工程。
 DLL 文件／产品版本与发行包统一采用 Actions 的北京时间日期及同日补丁编号。
@@ -17,7 +18,8 @@ DLL 文件／产品版本与发行包统一采用 Actions 的北京时间日期�
 - 一个 x86 DLL 同时供普通版和 XP SP3／Win7 版使用；CPU 需要 SSE2。
 
 分片 MP4 的标签／封面目前只读。在线 DASH、DRM、不可定位的网络流不在本版支持范围。
-ADIF、AAC Main/SSR/LD 等缺少完整实测样本，不能据此声称与原 DLL 所有分支完全一致。
+Main 单声道 PCE／88.2 kHz 和 LTP 已有实际样本验证；Main channel coupling、部分 LD、SSR、
+显式采样率和扩展 AOT 仍有解码库限制，ADIF 与其余组合尚未完整覆盖，不能声称与原 DLL 所有分支完全一致。
 恢复依据、验证记录及具体限制见 [RECONSTRUCTION.md](docs/RECONSTRUCTION.md)。
 全部 AAC 分析、构建对比与兼容性记录见 [文档目录](docs/README.md)。
 

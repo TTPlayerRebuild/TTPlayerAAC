@@ -212,8 +212,12 @@ class AudioReader final : public Reader,
         while(!live_eof_ && live_input_.size()<wanted) {
             BYTE bytes[8192];ULONG got{};
             const auto count=static_cast<ULONG>(std::min(wanted-live_input_.size(),sizeof(bytes)));
-            const HRESULT hr=stream_->Read(bytes,count,&got);check(hr);require(got<=count);
+            const HRESULT hr=stream_->Read(bytes,count,&got);require(got<=count);
+            // A cancelled host read may already have consumed and returned
+            // part of this packet. Keep those bytes before propagating the
+            // failure so retrying a live, non-seekable stream cannot lose them.
             live_input_.insert(live_input_.end(),bytes,bytes+got);
+            check(hr);
             if(hr==S_FALSE || !got) live_eof_=true;
         }
     }

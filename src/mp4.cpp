@@ -308,11 +308,26 @@ void Mp4File::classic(const Bytes &b) {
     if (object_type == 0x40 || (object_type >= 0x66 && object_type <= 0x68)) {
         codec = 0x43414146;
         require(asc.size() >= 2);
-    } else if (object_type == 0x69 || object_type == 0x6b)
+        // The sample entry is only a hint for AAC. Its 16.16 rate cannot
+        // represent 88.2/96 kHz, and valid files may leave these fields zero.
+        // Recover the AAC core clock before the iTunSMPB time conversion.
+        // The effective SBR output rate may be twice this clock; the reader
+        // discovers that actual PCM rate and layout from the decoder later.
+        if (!rate) {
+            constexpr DWORD rates[]{96000, 88200, 64000, 48000, 44100, 32000,
+                                    24000, 22050, 16000, 12000, 11025, 8000, 7350};
+            const auto index = ((asc[0] & 7) << 1) | (asc[1] >> 7);
+            require(index < std::size(rates));
+            rate = rates[index];
+        }
+        // A channel configuration of zero is a valid PCE, not an empty
+        // stream. AacCore::config and the first decoded packet validate it.
+        require(rate);
+    } else if (object_type == 0x69 || object_type == 0x6b) {
         codec = WAVE_FORMAT_MPEGLAYER3;
-    else
+        require(rate && channels);
+    } else
         require(false, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
-    require(rate && channels);
     auto stsz = child(b, stbl, cc("stsz")), stz2 = child(b, stbl, cc("stz2"));
     DWORD count{};
     if (stsz) {

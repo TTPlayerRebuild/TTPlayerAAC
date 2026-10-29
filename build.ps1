@@ -43,10 +43,25 @@ $archives = @((Join-Path $output "ttp_aac-$PackageVersion.zip"))
 if ($SourcePackage) {
     $source = Join-Path $stage 'source/ttp_aac'
     New-Item -ItemType Directory -Path $source -Force | Out-Null
+    function Copy-AacSourceEntry([string]$Path, [string]$Destination) {
+        $item = Get-Item -LiteralPath $Path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return }
+        if ($item.PSIsContainer) {
+            if ($item.Name -in @('.git','__pycache__','WinRel','WinDebug')) { return }
+            $target = Join-Path $Destination $item.Name
+            New-Item -ItemType Directory -Path $target -Force | Out-Null
+            foreach ($child in Get-ChildItem -LiteralPath $item.FullName -Force) {
+                Copy-AacSourceEntry $child.FullName $target
+            }
+        } elseif ($item.Extension.ToLowerInvariant() -notin @(
+            '.pyc','.pyo','.pdb','.obj','.exe','.dll','.lib','.o','.a','.ilk','.pch')) {
+            Copy-Item -LiteralPath $item.FullName -Destination $Destination
+        }
+    }
     # Explicit allowlist: no local tests, samples, binaries, caches or evidence.
     foreach ($entry in @('CMakeLists.txt','build.ps1','README.md','LICENSE','.gitignore',
                          '.clang-format','cmake','src','include','docs','.github')) {
-        Copy-Item -LiteralPath (Join-Path $PSScriptRoot $entry) -Destination $source -Recurse
+        Copy-AacSourceEntry (Join-Path $PSScriptRoot $entry) $source
     }
     # Preserve the resource version when rebuilding this source archive later.
     $PackageVersion | Set-Content -LiteralPath (Join-Path $source 'BUILD_VERSION') -Encoding ASCII
@@ -58,7 +73,7 @@ if ($SourcePackage) {
     }
     $upstream = (Get-Content -LiteralPath (Join-Path $BuildDirectory 'faad2-source-path.txt') -Encoding UTF8 -Raw).Trim()
     foreach ($entry in @('include','libfaad','COPYING','AUTHORS','README','properties.json')) {
-        Copy-Item -LiteralPath (Join-Path $upstream $entry) -Destination $decoderSource -Recurse
+        Copy-AacSourceEntry (Join-Path $upstream $entry) $decoderSource
     }
     $sourceArchive = Join-Path $output "ttp_aac-$PackageVersion-source.zip"
     Compress-Archive -LiteralPath $source -DestinationPath $sourceArchive -Force

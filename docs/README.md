@@ -8,6 +8,7 @@
 - [插件恢复记录、接口映射与支持范围](RECONSTRUCTION.md)
 - [2026-10-24 多段／空编辑列表及精确定位](EDIT_LIST_COMPLETION_20261024.md)
 - [2026-10-25 呈现时间、分片编辑及媒体时间空隙](PRESENTATION_TIMELINE_20261025.md)
+- [2026-10-29 部分读取取消、Main 容器提示字段与历史 Profile 边界](STREAM_PROFILE_BOUNDARIES_20261029P2.md)
 
 ## 原插件分析
 
