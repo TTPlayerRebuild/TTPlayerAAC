@@ -41,3 +41,14 @@ the pinned upstream archive and shared download cache are never changed.
   a complete configuration. Unsupported arbitrary rates are not rounded.
 The LD correction intentionally changes output from the original FAAD2 2.7
 implementation; it is a format-correctness fix, not a bit-exact old-decoder mode.
+
+Local native-rate extension (TTPlayer Rebuild, 2026-10-29, p4):
+cmake/faad2_rates_compat.cmake applies checked build-copy replacements after the
+earlier compatibility patch. Add index 12 / 7350 Hz to core sample-rate,
+prediction and spectral-band tables. The 7350 Hz core uses the standard 8 kHz
+band geometry while retaining its actual output rate. Do not implicitly double
+this newly supported rate. Previously supported low-rate upsampling is unchanged.
+Explicit and in-band SBR at 7350/14700 Hz remain rejected until their frequency
+tables and synthesis have independent validation; LD at index 12 is unsupported.
+The fixed upstream archive, public ABI and separate source/license distribution
+are unchanged. See docs for independent PCM comparisons and remaining limits.

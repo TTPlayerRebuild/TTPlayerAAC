@@ -36,7 +36,12 @@ DWORD AacCore::raw(const Bytes &initial) {
     long used = NeAACDecInit(handle_, const_cast<BYTE *>(initial.data()),
                              static_cast<unsigned long>(initial.size()), &rate, &channels);
     require(used >= 0 && static_cast<size_t>(used) <= initial.size());
-    require(rate && channels && channels <= 64);
+    // ADTS channel_configuration zero carries its layout in an in-band PCE.
+    // Init has not decoded that element yet; discover_format resolves it from
+    // the first PCM frame before the Reader publishes a WAVEFORMATEX.
+    const bool pending_pce = initial[0] == 0xff && (initial[1] & 0xf6) == 0xf0 &&
+        !(initial[2] & 1) && !(initial[3] & 0xc0);
+    require(rate && channels <= 64 && (channels || pending_pce));
     return DWORD(used);
 }
 Bytes AacCore::decode(const BYTE *data, DWORD bytes, DWORD &consumed, bool discover_format) {

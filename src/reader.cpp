@@ -20,10 +20,12 @@ class AudioReader final : public Reader,
     Mp4File movie_;
     AacCore raw_;
     std::uint64_t begin_{}, end_{}, raw_position_{};
+    std::uint64_t raw_play_frame_{}, raw_seek_target_{};
+    bool raw_seek_pending_{};
     std::vector<Sample> frames_;
     Bytes format_, pcm_;
     size_t sample_{}, pcm_position_{};
-    DWORD duration_{}, bitrate_{}, buffer_size_{8192};
+    DWORD duration_{}, bitrate_{}, buffer_size_{8192}, raw_core_rate_{};
     Picture picture_{sizeof(Picture), L"", L"", 0, nullptr, 3};
     std::wstring mime_;
     DWORD reference_duration_{};
@@ -121,6 +123,7 @@ class AudioReader final : public Reader,
     }
     const WAVEFORMATEX &wave() const { return *reinterpret_cast<const WAVEFORMATEX *>(format_.data()); }
     void float_format() {
+        require(raw_.rate && raw_.channels && raw_.channels <= 64);
         format_.assign(sizeof(WAVEFORMATEX), 0);
         auto *f = reinterpret_cast<WAVEFORMATEX *>(format_.data());
         f->wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
@@ -185,6 +188,7 @@ class AudioReader final : public Reader,
                 pos += n;
             }
             require(!frames_.empty());
+            raw_core_rate_ = expected_rate;
             end_ = pos;
             duration_ = dword((time * 1000 + expected_rate / 2) / expected_rate);
             bitrate_ = duration_ ? dword((end_ - begin_) * 8000 / duration_) : 0;
@@ -206,6 +210,42 @@ class AudioReader final : public Reader,
             raw_position_ += used;
         }
         float_format();
+    }
+    uint64_t seek_raw(uint64_t target, bool restart = false) {
+        // Keep the intended destination if a host read is cancelled. A retry
+        // reconstructs all predictive/SBR state before returning target PCM.
+        raw_seek_target_ = target;
+        raw_seek_pending_ = true;
+        if (restart || target < raw_play_frame_) {
+            pcm_.clear(); pcm_position_ = 0;
+            auto initial = read_at(stream_.p, begin_,
+                size_t(std::min<uint64_t>(65536, end_ - begin_)));
+            raw_position_ = begin_ + raw_.raw(initial);
+            raw_.channels = static_cast<unsigned char>(wave().nChannels);
+            raw_.rate = wave().nSamplesPerSec;
+            raw_play_frame_ = 0;
+        }
+        unsigned empty{};
+        while (raw_play_frame_ < target) {
+            if (pcm_position_ == pcm_.size()) {
+                if (raw_position_ >= end_) break;
+                auto input = read_at(stream_.p, raw_position_,
+                    size_t(std::min<uint64_t>(65536, end_ - raw_position_)));
+                DWORD used{};
+                pcm_ = raw_.decode(input.data(), DWORD(input.size()), used);
+                require(used > 0);
+                raw_position_ += used; pcm_position_ = 0;
+                if (pcm_.empty()) { require(++empty <= 64); continue; }
+                empty = 0;
+            }
+            const auto take = std::min<uint64_t>(target - raw_play_frame_,
+                (pcm_.size() - pcm_position_) / wave().nBlockAlign);
+            require(take > 0);
+            pcm_position_ += size_t(take) * wave().nBlockAlign;
+            raw_play_frame_ += take;
+        }
+        raw_seek_pending_ = false;
+        return raw_play_frame_;
     }
     void fill_live(size_t wanted) {
         require(wanted<=65536);
@@ -281,6 +321,7 @@ class AudioReader final : public Reader,
             capacity -= capacity % wave().nBlockAlign;
             if (!capacity)
                 return E_INVALIDARG;
+            if (!live_ && raw_seek_pending_) seek_raw(raw_seek_target_, true);
             if (pcm_position_ >= pcm_.size()) {
                 if(live_) {
                     pcm_.clear();pcm_position_=0;
@@ -312,6 +353,7 @@ class AudioReader final : public Reader,
             if (take)
                 std::memcpy(dest, pcm_.data() + pcm_position_, take);
             pcm_position_ += take;
+            if (!live_) raw_play_frame_ += take / wave().nBlockAlign;
             return target->SetLength(DWORD(take));
         });
     }
@@ -577,52 +619,20 @@ class AudioReader final : public Reader,
                 *position = milliseconds(it->time, movie_.timescale);
                 return S_OK;
             }
-            raw_.reset();
-            pcm_.clear();
-            pcm_position_ = 0;
+            uint64_t target = uint64_t(*position) * wave().nSamplesPerSec / 1000;
             if (!frames_.empty()) {
-                auto h = read_at(stream_.p, begin_, 7);
-                constexpr DWORD rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000,
-                                           22050, 16000, 12000, 11025, 8000,  7350};
-                DWORD sr = rates[(h[2] >> 2) & 15];
-                auto target = std::uint64_t(*position) * sr / 1000;
-                auto it = std::upper_bound(frames_.begin(), frames_.end(), target,
+                const DWORD sr = raw_core_rate_;
+                const auto core_target = std::uint64_t(*position) * sr / 1000;
+                auto it = std::upper_bound(frames_.begin(), frames_.end(), core_target,
                                            [](auto t, const Sample &s) { return t < s.time; });
                 if (it != frames_.begin())
                     --it;
-                raw_position_ = it->offset;
-                *position = dword(it->time * 1000 / sr);
-                if (it != frames_.begin()) {
-                    auto previous = it - 1;
-                    auto input = read_at(stream_.p, previous->offset, previous->size);
-                    DWORD consumed{};
-                    raw_.decode(input.data(), DWORD(input.size()), consumed);
-                }
-            } else {
-                auto initial =
-                    read_at(stream_.p, begin_, size_t(std::min<std::uint64_t>(65536, end_ - begin_)));
-                raw_position_ = begin_ + raw_.raw(initial);
-                raw_.channels = static_cast<unsigned char>(wave().nChannels);
-                raw_.rate = wave().nSamplesPerSec;
-                std::uint64_t target = std::uint64_t(*position) * raw_.rate / 1000, decoded{};
-                while (decoded < target && raw_position_ < end_) {
-                    auto input = read_at(stream_.p, raw_position_,
-                                         size_t(std::min<std::uint64_t>(65536, end_ - raw_position_)));
-                    DWORD used{};
-                    pcm_ = raw_.decode(input.data(), DWORD(input.size()), used);
-                    require(used);
-                    raw_position_ += used;
-                    auto frames = pcm_.size() / wave().nBlockAlign;
-                    if (frames > target - decoded) {
-                        pcm_position_ = size_t(target - decoded) * wave().nBlockAlign;
-                        decoded = target;
-                        break;
-                    }
-                    decoded += frames;
-                    pcm_.clear();
-                }
-                *position = dword(decoded * 1000 / raw_.rate);
+                // Preserve ADTS frame-granular positioning, but map it onto
+                // the same PCM origin as sequential playback. Resetting FAAD
+                // and decoding one prior packet does not rebuild its history.
+                target = rescale(it->time, sr, wave().nSamplesPerSec);
             }
+            *position = dword(seek_raw(target, raw_seek_pending_) * 1000 / wave().nSamplesPerSec);
             return S_OK;
         });
     }

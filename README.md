@@ -6,6 +6,8 @@
 最新边界修复：[2026-10-29 部分读取取消、Main 容器提示字段与历史 Profile 验证](docs/STREAM_PROFILE_BOUNDARIES_20261029P2.md)。
 后续 ADIF 修复：[2026.10.29p3 流读取与定位后预热](docs/ADIF_STREAMS_20261029P3.md)。
 同轮修复：[LD／显式频率与高采样率 SBR](docs/LD_ASC_20261029P3.md)、[分片标签／封面保存](docs/FRAGMENT_METADATA_SAVE_20261029P3.md)。
+最新修复：[2026.10.29p4 原始 AAC 定位与 PCE](docs/RAW_SEEK_PCE_20261029P4.md)、[原生 7350 Hz](docs/NATIVE_7350_RATES_20261029P4.md)。
+剩余实现：[Main 耦合通道与 SSR](docs/MAIN_COUPLING_SSR_REMAINING_20261029P4.md)。
 
 TTPlayer 重建版的独立 AAC／MP4 插件工程。
 DLL 文件／产品版本与发行包统一采用 Actions 的北京时间日期及同日补丁编号。
