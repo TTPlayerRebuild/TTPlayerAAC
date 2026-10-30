@@ -6,6 +6,7 @@ struct Sample {
     std::uint64_t offset{}, time{};
     DWORD size{}, duration{};
     std::int64_t composition{};
+    DWORD description{1};
     std::int64_t presentation() const {
         require(time <= uint64_t(INT64_MAX));
         require(composition <= 0 || time <= uint64_t(INT64_MAX - composition));
@@ -15,6 +16,14 @@ struct Sample {
         const auto begin = presentation();
         require(begin <= INT64_MAX - duration);
         return begin + duration;
+    }
+};
+struct AudioDescription {
+    Bytes asc, configuration;
+    DWORD codec{}, rate{}, channels{};
+    bool same_configuration(const AudioDescription &other) const {
+        return codec == other.codec && configuration == other.configuration &&
+            (codec == 0x43414146 || (rate == other.rate && channels == other.channels));
     }
 };
 struct Tag {
@@ -35,18 +44,20 @@ class Mp4File {
     std::vector<std::pair<std::uint64_t, std::uint64_t>> media_;
     std::map<DWORD, std::vector<DWORD>> defaults_;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> zero_size_boxes_;
+    bool smpb_eligible_{};
     void classic(const Bytes &track);
     void fragment(IStream *, std::uint64_t, std::uint64_t, std::map<DWORD, std::uint64_t> &);
     void read_tags();
 
   public:
     std::vector<Sample> samples;
+    std::vector<AudioDescription> descriptions;
     std::vector<Tag> tags;
     Bytes cover, asc;
     DWORD track_id{}, timescale{}, rate{}, channels{}, max_packet{}, bitrate{}, duration_ms{};
     DWORD codec{0x43414146}, audio_offset{};
     std::int64_t seek_bias{};
-    bool fragmented{};
+    bool fragmented{}, configuration_changes{};
     // Edit lengths use the movie clock; media starts use the track clock.
     std::vector<Edit> edits;
     DWORD edit_scale{};
@@ -55,6 +66,7 @@ class Mp4File {
     std::uint64_t trim_begin{}, trim_length{};
     DWORD trim_begin_scale{}, trim_length_scale{};
     void open(IStream *);
+    void resolve_audio_clock(DWORD output_rate);
     void save(IStream *);
     void set_tag(const std::string &, const std::wstring &);
     const Tag *tag(const std::string &) const;

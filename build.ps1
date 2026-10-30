@@ -71,6 +71,7 @@ if ($SourcePackage) {
     foreach ($entry in @('COPYING','AUTHORS','ORIGIN.txt')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "third_party/faad2/$entry") -Destination $notices
     }
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'third_party/SSR_REFERENCE_NOTICE.txt') -Destination (Join-Path $source 'third_party')
     $upstream = (Get-Content -LiteralPath (Join-Path $BuildDirectory 'faad2-source-path.txt') -Encoding UTF8 -Raw).Trim()
     foreach ($entry in @('include','libfaad','COPYING','AUTHORS','README','properties.json')) {
         Copy-AacSourceEntry (Join-Path $upstream $entry) $decoderSource

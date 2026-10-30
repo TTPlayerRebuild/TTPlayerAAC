@@ -25,7 +25,8 @@ add_custom_command(TARGET ttp_aac POST_BUILD
     --exports "${ttplayer_yy_thunks_SOURCE_DIR}/Config/x86/6.1.7600.txt"
     --report "$<TARGET_FILE_DIR:ttp_aac>/legacy-imports.json" VERBATIM)
 install(TARGETS ttp_aac RUNTIME DESTINATION AddIn COMPONENT Runtime)
-install(FILES third_party/faad2/COPYING third_party/faad2/ORIGIN.txt DESTINATION licenses/ttp_aac)
+install(FILES third_party/faad2/COPYING third_party/faad2/ORIGIN.txt
+  third_party/SSR_REFERENCE_NOTICE.txt DESTINATION licenses/ttp_aac)
 install(FILES docs/licenses/YY-Thunks-LICENSE.txt DESTINATION licenses/ttp_aac)
 install(FILES docs/licenses/VC-LTL-LICENSE.txt DESTINATION licenses/ttp_aac)
 install(FILES docs/INSTALL.md docs/RECONSTRUCTION.md DESTINATION docs/ttp_aac)

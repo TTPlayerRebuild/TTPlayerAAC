@@ -7,7 +7,10 @@
 后续 ADIF 修复：[2026.10.29p3 流读取与定位后预热](docs/ADIF_STREAMS_20261029P3.md)。
 同轮修复：[LD／显式频率与高采样率 SBR](docs/LD_ASC_20261029P3.md)、[分片标签／封面保存](docs/FRAGMENT_METADATA_SAVE_20261029P3.md)。
 最新修复：[2026.10.29p4 原始 AAC 定位与 PCE](docs/RAW_SEEK_PCE_20261029P4.md)、[原生 7350 Hz](docs/NATIVE_7350_RATES_20261029P4.md)。
-剩余实现：[Main 耦合通道与 SSR](docs/MAIN_COUPLING_SSR_REMAINING_20261029P4.md)。
+最新补全：[Main／LC 耦合通道](docs/CCE_IMPLEMENTATION_20261030.md)、[SSR](docs/SSR_IMPLEMENTATION_20261030.md)、[LD480／512 与 960 帧验证](docs/LD_VALIDATION_20261030.md)、[显式时钟、PCE 与重置](docs/CORE_CLOCK_PCE_RESET_20261030.md)。
+最新兼容修复：[多配置 MP4 与无缝裁剪](docs/MP4_CONFIG_SWITCH_20261030P1.md)、[LTP 与 DRC](docs/LTP_DRC_VALIDATION_20261030P1.md)、[LTP 独立耦合](docs/CCE_LTP_COMPATIBILITY_20261030P1.md)。
+最新实测：[LTP960 真实 PCM 编码、独立解码对照及 XP／Win7 验收](docs/LTP960_VALIDATION_20261030P2.md)。
+此前分析：[Main 耦合通道与 SSR 的原始缺口](docs/MAIN_COUPLING_SSR_REMAINING_20261029P4.md)。
 
 TTPlayer 重建版的独立 AAC／MP4 插件工程。
 DLL 文件／产品版本与发行包统一采用 Actions 的北京时间日期及同日补丁编号。
@@ -23,8 +26,12 @@ DLL 文件／产品版本与发行包统一采用 Actions 的北京时间日期�
 
 分片 MP4 的标签／封面可在现有标签区或预留空白足够时保存；容量不足明确报错，音频分片与索引不移动。
 在线 DASH、DRM、不可定位的 MP4 网络流不在本版支持范围。
-Main 单声道 PCE／88.2 kHz、LTP 及 LD 已有实际样本验证；Main channel coupling、SSR、
-表外显式采样率和扩展 AOT 仍有限制。ADIF 已覆盖部分 LC 配置，不能声称与原 DLL 所有分支完全一致。
+Main／LC 的三个耦合位置、SSR 四子带合成、LD480／512、LC960、7350 Hz Main／LD／LC960
+与表外显式核心采样率已有实际音频验证；7350 Hz 实际 LTP、LTP 独立 CCE 和 DRC 历史现已验证。
+普通／分片 MP4 支持多个 sample description，以及保持输出采样率、声道数、声道布局不变的 AAC 配置切换。
+LTP960 已验证 44.1／48 kHz 单／双声道、sine 窗的真实预测码流；样本由私有改造的验证编码器生成，尚不覆盖 TNS、KBD、ER-LTP 和多声道组合。
+CCE 与 SBR／PS、7350 Hz SBR、扩展 AOT 仍有限制；
+LTP 依赖 CCE 和 SSR CCE 按规范拒绝，不能声称与原 DLL 所有分支完全一致。
 恢复依据、验证记录及具体限制见 [RECONSTRUCTION.md](docs/RECONSTRUCTION.md)。
 全部 AAC 分析、构建对比与兼容性记录见 [文档目录](docs/README.md)。
 

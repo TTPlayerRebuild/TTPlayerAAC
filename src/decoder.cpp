@@ -67,7 +67,21 @@ Bytes AacCore::decode(const BYTE *data, DWORD bytes, DWORD &consumed, bool disco
         constexpr DWORD bits[]{0,4,1,2,0x200,0x400,0x10,0x20,0x100,8};
         std::vector<std::pair<DWORD,unsigned>> order;
         DWORD mask{};
-        for(unsigned c=0;c<info.channels;++c){const auto pos=info.channel_position[c];require(pos>0&&pos<10,E_NOTIMPL);const auto bit=bits[pos];require(!(mask&bit),E_NOTIMPL);mask|=bit;order.push_back({bit,c});}
+        for (unsigned c = 0; c < info.channels; ++c) {
+            const auto pos = info.channel_position[c];
+            require(pos > 0 && pos < std::size(bits), E_NOTIMPL);
+            DWORD bit = bits[pos];
+            // A PCE with four/five front channels places the inner pair
+            // before FL/FR. FAAD labels both pairs FL/FR; recover FLC/FRC
+            // from the front count instead of rejecting valid 7.1-wide PCM.
+            const unsigned first_pair = info.num_front_channels & 1;
+            if ((info.num_front_channels == 4 || info.num_front_channels == 5) &&
+                c >= first_pair && c < first_pair + 2 && (pos == 2 || pos == 3))
+                bit = pos == 2 ? SPEAKER_FRONT_LEFT_OF_CENTER : SPEAKER_FRONT_RIGHT_OF_CENTER;
+            require(!(mask & bit), E_NOTIMPL);
+            mask |= bit;
+            order.push_back({bit, c});
+        }
         std::sort(order.begin(),order.end());channel_mask=mask;
         const auto* source=static_cast<const float*>(pcm);auto* dest=reinterpret_cast<float*>(result.data());
         for(size_t i=0;i<info.samples;i+=info.channels)for(unsigned c=0;c<info.channels;++c)dest[i+c]=source[i+order[c].second];
@@ -78,10 +92,11 @@ Bytes AacCore::decode(const BYTE *data, DWORD bytes, DWORD &consumed, bool disco
 class AacDecoder final : public Decoder {
     LONG references_{1};
     AacCore core_;
-    Bytes input_, pcm_;
+    Bytes input_, pcm_, configuration_;
     size_t offset_{};
     DWORD input_size_{1024}, output_size_{8192};
     bool ready_{};
+    bool stereo_ps_{};
 
   public:
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
@@ -104,10 +119,21 @@ class AacDecoder final : public Decoder {
     HRESULT STDMETHODCALLTYPE Initialize(const WAVEFORMATEX *in, WAVEFORMATEX *out) override {
         if (!in || !out)
             return E_POINTER;
+        // The original public ABI permits Initialize(format, format).
+        // Capture the header before clearing the (possibly aliased) output.
+        const WAVEFORMATEX input_format = *in;
+        ready_ = false;
+        stereo_ps_ = false;
+        input_.clear();
+        pcm_.clear();
+        configuration_.clear();
+        offset_ = 0;
+        core_.close();
+        *out = {};
         return protect([&]() -> HRESULT {
-            require(in->wFormatTag == WAVE_FORMAT_EXTENSIBLE && in->cbSize >= 2, E_INVALIDARG);
+            require(input_format.wFormatTag == WAVE_FORMAT_EXTENSIBLE && input_format.cbSize >= 2, E_INVALIDARG);
             auto *p = reinterpret_cast<const BYTE *>(in) + sizeof(WAVEFORMATEX);
-            DWORD n = in->cbSize;
+            DWORD n = input_format.cbSize;
             if (n >= 24) {
                 GUID type{};
                 std::memcpy(&type, reinterpret_cast<const BYTE *>(in) + 24, 16);
@@ -115,11 +141,13 @@ class AacDecoder final : public Decoder {
                 p += 22;
                 n -= 22;
             }
-            core_.config(Bytes(p, p + n));
+            configuration_.assign(p, p + n);
+            core_.config(configuration_);
             // The MP4 Reader probes implicit PS before publishing its format.
-            if (core_.channels == 1 && in->nChannels == 2)
+            stereo_ps_ = core_.channels == 1 && input_format.nChannels == 2;
+            if (stereo_ps_)
                 core_.channels = 2;
-            input_size_ = std::max<DWORD>(1024, in->nAvgBytesPerSec >> 4);
+            input_size_ = std::max<DWORD>(1024, input_format.nAvgBytesPerSec >> 4);
             output_size_ = core_.frame_length * core_.channels * 4;
             *out = {};
             out->wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
@@ -194,8 +222,19 @@ class AacDecoder final : public Decoder {
         input_.clear();
         pcm_.clear();
         offset_ = 0;
-        core_.reset();
-        return S_OK;
+        if (!ready_)
+            return S_OK;
+        ready_ = false;
+        return protect([&]() -> HRESULT {
+            // PostSeekReset only signals a discontinuity to FAAD. A fresh
+            // packet sequence must also discard prediction, overlap, PNS,
+            // coupling and SSR histories, just like a newly created decoder.
+            core_.config(configuration_);
+            if (stereo_ps_)
+                core_.channels = 2;
+            ready_ = true;
+            return S_OK;
+        });
     }
 };
 HRESULT make_decoder(void **out) {

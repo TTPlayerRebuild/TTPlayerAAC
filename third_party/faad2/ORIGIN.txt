@@ -52,3 +52,38 @@ Explicit and in-band SBR at 7350/14700 Hz remain rejected until their frequency
 tables and synthesis have independent validation; LD at index 12 is unsupported.
 The fixed upstream archive, public ABI and separate source/license distribution
 are unchanged. See docs for independent PCM comparisons and remaining limits.
+
+Local AAC completion (TTPlayer Rebuild, 2026-10-30):
+- cmake/faad2_frequency_compat.cmake preserves an explicit core clock separately
+  from the ISO spectral-table family. No rounding of the exposed output rate.
+- cmake/faad2_ld_compat.cmake removes LD's inappropriate implicit SBR guess,
+  selects the nearest defined LD table family and corrects both forward radix-5
+  FFT branches used by LD480 and LTP960 prediction transforms.
+- cmake/faad2_coupling_compat.cmake and src/faad_coupling implement Main/LC
+  coupling at all three coupling points, checked gains/routing, per-decoder state
+  and DRC handling. Main prediction now precedes intensity stereo as required.
+- cmake/faad2_ssr_compat.cmake and faad2_ssr_*.c restore complete SSR gain control,
+  per-band filterbank and IPQF history. SSR960 is rejected; a dormant upstream
+  guard is corrected so enabling SSR does not incorrectly reject LTP960.
+  The gain equations were cross-checked with the MIT-licensed reference listed
+  in ../SSR_REFERENCE_NOTICE.txt; that notice accompanies the source archive.
+- cmake/faad2_channel_compat.cmake activates valid ADTS channel-configuration-zero
+  PCEs and separates the SCE/LFE element-tag maps. These are private decoder
+  structure changes; the plugin public factory and method layouts are unchanged.
+The earlier p3/p4 rate/LD limitations above describe those historical builds.
+See docs/CORE_CLOCK_PCE_RESET_20261030.md, CCE_IMPLEMENTATION_20261030.md,
+SSR_IMPLEMENTATION_20261030.md and LD_VALIDATION_20261030.md for current tested
+scope, independent references and explicit unsupported combinations.
+All adaptations still apply only to checked build-tree copies of FAAD2 2.11.4.
+Local LTP/CCE follow-up (TTPlayer Rebuild, 2026-10-30p1):
+- cmake/faad2_ltp_drc_compat.cmake preserves pre-DRC LTP history with a
+  separately allocated unscaled overlap, only after DRC first affects a channel.
+  Subsequent output gain/exclusion changes cannot feed back into prediction.
+- cmake/faad2_coupling_compat.cmake and src/faad_coupling also support independent
+  LTP coupling, updating both source and target prediction histories before
+  time-domain mixing. Repeated targets within one CCE are rejected, while
+  distinct SCE/CPE namespaces remain valid. SSR CCE and dependent LTP CCE stay
+  rejected according to their normative tool restrictions.
+See docs/LTP_DRC_VALIDATION_20261030P1.md and CCE_LTP_COMPATIBILITY_20261030P1.md
+for independent references, actual predicting streams and remaining limits.
+No additional runtime library or change to the public plugin ABI is introduced.

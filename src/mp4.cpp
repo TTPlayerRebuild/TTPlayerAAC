@@ -113,6 +113,78 @@ void descriptors(const BYTE *p, size_t n, Bytes &asc, BYTE &object_type, int dep
         n -= length;
     }
 }
+AudioDescription audio_description(const Bytes &b, Box audio) {
+    AudioDescription result;
+    require(audio.type == cc("mp4a"), HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+    const BYTE *p = data(b, audio, 28);
+    WORD version = be16(p + 8);
+    result.channels = be16(p + 16);
+    result.rate = be32(p + 24) >> 16;
+    size_t skip = 28;
+    if (version == 1)
+        skip += 16;
+    else
+        require(version == 0, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+    auto esds = child(b, audio, cc("esds"), skip);
+    if (!esds) {
+        auto wave = child(b, audio, cc("wave"), skip);
+        esds = child(b, wave, cc("esds"));
+    }
+    require(!child(b, audio, cc("sinf"), skip), HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+    BYTE object_type{};
+    p = data(b, esds, 4);
+    descriptors(p + 4, esds.size - esds.head - 4, result.asc, object_type);
+    if (object_type == 0x40 || (object_type >= 0x66 && object_type <= 0x68)) {
+        result.codec = 0x43414146;
+        require(result.asc.size() >= 2);
+        // The sample entry is only a hint for AAC. Its 16.16 rate cannot
+        // represent 88.2/96 kHz, and valid files may leave these fields zero.
+        // Recover the AAC core clock before the iTunSMPB time conversion.
+        // The effective SBR output rate may be twice this clock; the reader
+        // discovers that actual PCM rate and layout from the decoder later.
+        if (!result.rate) {
+            constexpr DWORD rates[]{96000, 88200, 64000, 48000, 44100, 32000,
+                                    24000, 22050, 16000, 12000, 11025, 8000, 7350};
+            require((result.asc[0] >> 3) != 31, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+            const auto index = ((result.asc[0] & 7) << 1) | (result.asc[1] >> 7);
+            if (index == 15) {
+                require(result.asc.size() >= 5);
+                const DWORD explicit_rate = (DWORD(result.asc[1] & 0x7f) << 17) |
+                    (DWORD(result.asc[2]) << 9) | (DWORD(result.asc[3]) << 1) | (result.asc[4] >> 7);
+                require(explicit_rate != 0);
+                result.rate = explicit_rate;
+            } else {
+                require(index < std::size(rates));
+                result.rate = rates[index];
+            }
+        }
+        // A channel configuration of zero is a valid PCE, not an empty
+        // stream. AacCore::config and the first decoded packet validate it.
+        require(result.rate);
+    } else if (object_type == 0x69 || object_type == 0x6b) {
+        result.codec = WAVE_FORMAT_MPEGLAYER3;
+        require(result.rate && result.channels);
+    } else
+        require(false, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+    // Indexed and explicitly encoded copies of the same core frequency
+    // describe the same decoder state. Normalize only this exact syntax
+    // transformation; every other configuration bit remains significant.
+    result.configuration = result.asc;
+    if (result.codec == 0x43414146 && result.asc.size() >= 2 && (result.asc[0] >> 3) != 31) {
+        const auto index = ((result.asc[0] & 7) << 1) | (result.asc[1] >> 7);
+        constexpr DWORD rates[]{96000,88200,64000,48000,44100,32000,
+                                24000,22050,16000,12000,11025,8000,7350};
+        if (index < std::size(rates)) {
+            const auto clock = rates[index];
+            result.configuration = {BYTE((result.asc[0] & 0xf8) | 7),
+                BYTE(0x80 | (clock >> 17)), BYTE(clock >> 9), BYTE(clock >> 1),
+                BYTE(((clock & 1) << 7) | (result.asc[1] & 0x7f))};
+            result.configuration.insert(result.configuration.end(),
+                result.asc.begin() + 2, result.asc.end());
+        }
+    }
+    return result;
+}
 Bytes box(DWORD type, const Bytes &payload) {
     require(payload.size() <= MAXDWORD - 8);
     Bytes b;
@@ -285,59 +357,23 @@ void Mp4File::classic(const Bytes &b) {
     require(be32(p + 4) >= 1);
     auto entries = boxes(b, stsd.body() + 8, stsd.end());
     require(!entries.empty());
-    auto audio = entries[0];
-    require(audio.type == cc("mp4a"), HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
-    p = data(b, audio, 28);
-    WORD version = be16(p + 8);
-    channels = be16(p + 16);
-    rate = be32(p + 24) >> 16;
-    size_t skip = 28;
-    if (version == 1)
-        skip += 16;
-    else
-        require(version == 0, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
-    auto esds = child(b, audio, cc("esds"), skip);
-    if (!esds) {
-        auto wave = child(b, audio, cc("wave"), skip);
-        esds = child(b, wave, cc("esds"));
-    }
-    require(!child(b, audio, cc("sinf"), skip), HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
-    BYTE object_type{};
-    p = data(b, esds, 4);
-    descriptors(p + 4, esds.size - esds.head - 4, asc, object_type);
-    if (object_type == 0x40 || (object_type >= 0x66 && object_type <= 0x68)) {
-        codec = 0x43414146;
-        require(asc.size() >= 2);
-        // The sample entry is only a hint for AAC. Its 16.16 rate cannot
-        // represent 88.2/96 kHz, and valid files may leave these fields zero.
-        // Recover the AAC core clock before the iTunSMPB time conversion.
-        // The effective SBR output rate may be twice this clock; the reader
-        // discovers that actual PCM rate and layout from the decoder later.
-        if (!rate) {
-            constexpr DWORD rates[]{96000, 88200, 64000, 48000, 44100, 32000,
-                                    24000, 22050, 16000, 12000, 11025, 8000, 7350};
-            require((asc[0] >> 3) != 31, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
-            const auto index = ((asc[0] & 7) << 1) | (asc[1] >> 7);
-            if (index == 15) {
-                require(asc.size() >= 5);
-                const DWORD explicit_rate = (DWORD(asc[1] & 0x7f) << 17) |
-                    (DWORD(asc[2]) << 9) | (DWORD(asc[3]) << 1) | (asc[4] >> 7);
-                require(std::find(std::begin(rates), std::end(rates), explicit_rate) != std::end(rates),
-                        HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
-                rate = explicit_rate;
-            } else {
-                require(index < std::size(rates));
-                rate = rates[index];
-            }
+    require(entries.size() == be32(p + 4) && entries.size() <= 4096);
+    descriptions.clear();
+    for (const auto &entry : entries) {
+        try {
+            descriptions.push_back(audio_description(b, entry));
+        } catch (const Failure &error) {
+            if (error.code != HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED)) throw;
+            // An unreferenced unsupported sample entry does not prevent a
+            // supported description in this track from being selected.
+            descriptions.emplace_back();
         }
-        // A channel configuration of zero is a valid PCE, not an empty
-        // stream. AacCore::config and the first decoded packet validate it.
-        require(rate);
-    } else if (object_type == 0x69 || object_type == 0x6b) {
-        codec = WAVE_FORMAT_MPEGLAYER3;
-        require(rate && channels);
-    } else
-        require(false, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+    }
+    const auto initial = std::find_if(descriptions.begin(), descriptions.end(),
+        [](const AudioDescription &d) { return d.codec != 0; });
+    require(initial != descriptions.end(), HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+    asc = initial->asc; codec = initial->codec;
+    rate = initial->rate; channels = initial->channels;
     auto stsz = child(b, stbl, cc("stsz")), stz2 = child(b, stbl, cc("stz2"));
     DWORD count{};
     if (stsz) {
@@ -418,17 +454,26 @@ void Mp4File::classic(const Bytes &b) {
     require(nr && nr <= chunks);
     sc = data(b, stsc, size_t(nr) * 12, 8);
     require(be32(sc) == 1);
+    for (DWORD i = 0; i < nr; ++i) {
+        const DWORD first_chunk = be32(sc + i * 12);
+        const DWORD description = be32(sc + i * 12 + 8);
+        require(first_chunk && first_chunk <= chunks &&
+                (!i || first_chunk > be32(sc + (i - 1) * 12)));
+        require(be32(sc + i * 12 + 4) && description && description <= descriptions.size());
+        require(descriptions[description - 1].codec != 0, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+    }
     index = 0;
     DWORD r = 0;
     for (DWORD c = 1; c <= chunks; ++c) {
         while (r + 1 < nr && be32(sc + (r + 1) * 12) <= c)
             ++r;
-        require(be32(sc + r * 12 + 8) == 1, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+        const DWORD description = be32(sc + r * 12 + 8);
         DWORD n = be32(sc + r * 12 + 4);
         require(n && n <= samples.size() - index);
         std::uint64_t pos = large ? be64(p + size_t(c - 1) * 8) : be32(p + size_t(c - 1) * 4);
         for (DWORD i = 0; i < n; ++i) {
             samples[index].offset = pos;
+            samples[index].description = description;
             pos = add(pos, samples[index++].size);
         }
     }
@@ -500,7 +545,8 @@ void Mp4File::fragment(IStream *stream, std::uint64_t start, std::uint64_t lengt
             p = data(b, trun, size_t(n) * stride, off);
             size_t j{};
             if (id == track_id) {
-                require(description == 1, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+                require(description && description <= descriptions.size());
+                require(descriptions[description - 1].codec != 0, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
                 require(n <= max_samples - samples.size());
             }
             for (DWORD i = 0; i < n; ++i) {
@@ -523,7 +569,7 @@ void Mp4File::fragment(IStream *stream, std::uint64_t start, std::uint64_t lengt
                 }
                 require(s && d);
                 if (id == track_id)
-                    samples.push_back({cursor, time, s, d, composition});
+                    samples.push_back({cursor, time, s, d, composition, description});
                 cursor = add(cursor, s);
                 time = add(time, d);
             }
@@ -616,6 +662,23 @@ void Mp4File::open(IStream *stream) {
         ends[track_id] = add(samples.back().time, samples.back().duration);
     for (auto f : fragments)
         fragment(stream, f.at, f.size, ends);
+    if (!samples.empty()) {
+        const auto id = samples.front().description;
+        require(id && id <= descriptions.size());
+        const auto &initial = descriptions[id - 1];
+        require(initial.codec != 0, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+        asc = initial.asc; codec = initial.codec;
+        rate = initial.rate; channels = initial.channels;
+        for (const auto &sample : samples) {
+            require(sample.description && sample.description <= descriptions.size());
+            const auto &description = descriptions[sample.description - 1];
+            require(description.codec == codec, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+            if (!initial.same_configuration(description)) {
+                require(codec == 0x43414146, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+                configuration_changes = true;
+            }
+        }
+    }
     std::uint64_t total{}, end{}, last_time{};
     bool first = true;
     for (auto &s : samples) {
@@ -655,7 +718,6 @@ void Mp4File::open(IStream *stream) {
                 edit_scale = be32(data(moov_, mvhd, p[0] ? 24 : 16) + (p[0] ? 20 : 12));
         }
         std::uint64_t edit_duration{};
-        const auto coded = add(samples.back().time, samples.back().duration);
         uint64_t presented{};
         bool continuous = true;
         uint64_t expected_time{};
@@ -703,42 +765,23 @@ void Mp4File::open(IStream *stream) {
             require(!count || !edits.empty());
             break;
         }
-        // A multi-part timeline (including empty edits) is authoritative.
-        // A whole-file iTunSMPB must not erase cuts, repeats, or leading silence.
-        const bool single_range = continuous && !fragmented &&
+        // Defer iTunSMPB's PCM sample counts until the decoder has resolved
+        // the actual output clock (including implicit SBR). mp4a's rate field
+        // is only a hint and may describe the core clock or be simply wrong.
+        smpb_eligible_ = continuous && !fragmented &&
             (edits.empty() || (edits.size() == 1 && !edits.front().empty));
-        if (const auto* smpb = single_range ? tag("iTunSMPB") : nullptr) {
-            unsigned long long reserved{}, delay{}, padding{}, length{};
-            if (swscanf_s(smpb->value.c_str(), L"%llx %llx %llx %llx", &reserved,
-                          &delay, &padding, &length) == 4 && length &&
-                delay <= UINT32_MAX && padding <= UINT32_MAX &&
-                length <= UINT64_MAX-delay-padding) {
-                if (rate && coded <= UINT64_MAX/rate &&
-                    delay+length <= coded*rate/timescale) {
-                    bool same_range = edits.empty();
-                    if (!same_range && edits.front().begin <= UINT64_MAX / rate &&
-                        edits.front().length <= UINT64_MAX / rate) {
-                        const auto start = edits.front().begin * rate / timescale;
-                        const auto count = edits.front().length * rate / edit_scale;
-                        const auto tolerance = uint64_t(rate / edit_scale) + 1;
-                        same_range = (start > delay ? start - delay : delay - start) <= tolerance &&
-                                     (count > length ? count - length : length - count) <= tolerance;
-                    }
-                    if (same_range) {
-                        gapless = true; trim_begin = delay; trim_length = length;
-                        trim_begin_scale = trim_length_scale = rate;
-                    }
-                }
-            }
-        }
         // With no edit, fragmented timestamps still define real gaps/offsets.
         // Keep classic Nero's no-edit ctts compatibility path unchanged.
         if (fragmented && edits.empty() && !continuous)
             edits.push_back({0, 0, false, true});
-        if (gapless) {
-            edits.clear();
-            duration_ms = milliseconds(trim_length, trim_length_scale);
-        } else if (!edits.empty()) {
+        if (configuration_changes) {
+            int64_t previous_end = INT64_MIN;
+            for (const auto &sample : samples) {
+                require(sample.presentation() >= previous_end, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+                previous_end = sample.presentation_end();
+            }
+        }
+        if (!edits.empty()) {
             // AAC packets keep decode order. Presentation gaps are silence;
             // overlapping/reordered composition intervals require a separate
             // mixing/reordering policy and are deliberately not guessed.
@@ -752,6 +795,50 @@ void Mp4File::open(IStream *stream) {
                 ? milliseconds(presented - edits.front().begin, timescale)
                 : milliseconds(edit_duration, edit_scale);
         }
+    }
+}
+
+void Mp4File::resolve_audio_clock(DWORD output_rate) {
+    require(output_rate != 0);
+    rate = output_rate;
+    if (!smpb_eligible_ || samples.empty()) return;
+    const auto coded = add(samples.back().time, samples.back().duration);
+    if (const auto* smpb = smpb_eligible_ ? tag("iTunSMPB") : nullptr) {
+        unsigned long long reserved{}, delay{}, padding{}, length{};
+        if (swscanf_s(smpb->value.c_str(), L"%llx %llx %llx %llx", &reserved,
+                      &delay, &padding, &length) == 4 && length &&
+            delay <= UINT32_MAX && padding <= UINT32_MAX &&
+            length <= UINT64_MAX-delay-padding) {
+            // Nero can count iTunSMPB in the media/core clock, while
+            // other writers use decoded output samples. Prefer the media
+            // clock only when its complete delay + content + padding sum
+            // exactly matches the encoded timeline and the output clock
+            // does not. Never infer the unit from mp4a's advisory hint.
+            const auto total = delay + length + padding;
+            const bool output_matches = coded <= UINT64_MAX / rate &&
+                total == coded * rate / timescale;
+            const DWORD trim_rate = !output_matches && total == coded ? timescale : rate;
+            if (coded <= UINT64_MAX / trim_rate &&
+                delay + length <= coded * trim_rate / timescale) {
+                bool same_range = edits.empty();
+                if (!same_range && edits.front().begin <= UINT64_MAX / trim_rate &&
+                    edits.front().length <= UINT64_MAX / trim_rate) {
+                    const auto start = edits.front().begin * trim_rate / timescale;
+                    const auto count = edits.front().length * trim_rate / edit_scale;
+                    const auto tolerance = uint64_t(trim_rate / edit_scale) + 1;
+                    same_range = (start > delay ? start - delay : delay - start) <= tolerance &&
+                                 (count > length ? count - length : length - count) <= tolerance;
+                }
+                if (same_range) {
+                    gapless = true; trim_begin = delay; trim_length = length;
+                    trim_begin_scale = trim_length_scale = trim_rate;
+                }
+            }
+        }
+    }
+    if (gapless) {
+        edits.clear();
+        duration_ms = milliseconds(trim_length, trim_length_scale);
     }
 }
 

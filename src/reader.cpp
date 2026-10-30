@@ -38,6 +38,7 @@ class AudioReader final : public Reader,
     Bytes decoded_;
     uint64_t play_position_{}, play_length_{}, media_length_{};
     size_t decoded_sample_{SIZE_MAX};
+    DWORD active_description_{}, movie_channel_mask_{};
     static uint64_t rescale(uint64_t ticks, DWORD from, DWORD to) {
         require(from && to);
         const auto whole = ticks / from, fraction = (ticks % from) * uint64_t(to) / from;
@@ -53,8 +54,62 @@ class AudioReader final : public Reader,
         require(frames <= uint64_t(INT64_MAX));
         return ticks < 0 ? -int64_t(frames) : int64_t(frames);
     }
+    void configure_movie(DWORD description) {
+        require(description && description <= movie_.descriptions.size());
+        raw_.config(movie_.descriptions[description - 1].asc);
+        // Format discovery has already resolved implicit SBR/PS. Keep the
+        // fixed output contract when a new AAC configuration starts warming.
+        raw_.rate = movie_.rate;
+        raw_.channels = BYTE(movie_.channels);
+        raw_.channel_mask = movie_channel_mask_;
+        active_description_ = description;
+    }
+    void inspect_movie() {
+        if (movie_.samples.empty()) {
+            AacCore inspect; inspect.config(movie_.asc);
+            movie_.channels = inspect.channels; movie_.rate = inspect.rate;
+            raw_.channel_mask = movie_channel_mask_ = inspect.channel_mask;
+            return;
+        }
+        std::vector<bool> seen(movie_.descriptions.size());
+        std::map<Bytes, bool> configurations;
+        bool initial = true;
+        for (size_t at = 0; at < movie_.samples.size(); ++at) {
+            const auto id = movie_.samples[at].description;
+            require(id && id <= seen.size());
+            if (seen[id - 1]) continue;
+            seen[id - 1] = true;
+            const auto &description = movie_.descriptions[id - 1];
+            if (configurations.find(description.configuration) != configurations.end()) continue;
+            AacCore inspect;
+            inspect.config(description.asc);
+            bool produced = false;
+            for (size_t i = at; i < movie_.samples.size() && i - at < 64; ++i) {
+                const auto &sample = movie_.samples[i];
+                if (!description.same_configuration(movie_.descriptions[sample.description - 1])) break;
+                auto bytes = read_at(stream_.p, sample.offset, sample.size);
+                DWORD used{};
+                if (!inspect.decode(bytes.data(), DWORD(bytes.size()), used, true).empty()) {
+                    produced = true;
+                    break;
+                }
+            }
+            // A changing configuration must establish its real layout before
+            // publishing one WAVEFORMATEX to an unmodified legacy host.
+            require(!movie_.configuration_changes || produced, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+            if (initial) {
+                movie_.channels = inspect.channels; movie_.rate = inspect.rate;
+                raw_.channel_mask = movie_channel_mask_ = inspect.channel_mask;
+                initial = false;
+            } else {
+                require(inspect.rate == movie_.rate && inspect.channels == movie_.channels &&
+                        inspect.channel_mask == movie_channel_mask_, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+            }
+            configurations.emplace(description.configuration, true);
+        }
+    }
     void restart_trimmed() {
-        raw_.config(movie_.asc);raw_.rate=movie_.rate;raw_.channels=BYTE(movie_.channels);
+        configure_movie(movie_.samples.front().description);
         sample_ = 0; decoded_sample_ = SIZE_MAX; decoded_.clear();
     }
     bool next_trimmed() {
@@ -85,6 +140,10 @@ class AudioReader final : public Reader,
         while (decoded_sample_ != wanted) {
             require(sample_ < movie_.samples.size(), STG_E_READFAULT);
             const auto& s = movie_.samples[sample_];
+            const bool changed = !movie_.descriptions[active_description_ - 1].same_configuration(
+                movie_.descriptions[s.description - 1]);
+            if (changed) configure_movie(s.description);
+            else active_description_ = s.description;
             auto bytes = read_at(stream_.p, s.offset, s.size);
             DWORD used{};
             decoded_ = raw_.decode(bytes.data(), DWORD(bytes.size()), used);
@@ -93,11 +152,12 @@ class AudioReader final : public Reader,
                 // FAAD suppresses the first overlap frame. If an edit selects
                 // it, retain its media time as silence rather than shortening
                 // the track or shifting all subsequent sample coordinates.
-                require(sample_ == 0, STG_E_READFAULT);
+                require(sample_ == 0 || changed, STG_E_READFAULT);
                 const auto frames = presentation_frame(s.presentation_end()) - presentation_frame(s.presentation());
                 require(frames && frames <= 4096);
                 decoded_.assign(size_t(frames) * wave().nBlockAlign, 0);
             }
+            require(raw_.channel_mask == movie_channel_mask_, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
             decoded_sample_ = sample_++;
         }
         const auto packet_end = presentation_frame(packet->presentation_end());
@@ -431,19 +491,8 @@ class AudioReader final : public Reader,
             if (mp4_) {
                 movie_.open(stream);
                 if (movie_.codec == aac_subtype.Data1) {
-                    AacCore inspect;
-                    inspect.config(movie_.asc);
-                    // Resolve implicit SBR/PS too; container sample-entry
-                    // channels alone do not distinguish HE mono from HEv2.
-                    for (size_t i = 0; i < movie_.samples.size() && i < 64; ++i) {
-                        const auto &sample = movie_.samples[i];
-                        auto bytes = read_at(stream, sample.offset, sample.size);
-                        DWORD used{};
-                        if (!inspect.decode(bytes.data(), DWORD(bytes.size()), used, true).empty()) break;
-                    }
-                    movie_.channels = inspect.channels;
-                    movie_.rate = inspect.rate;
-                    raw_.channel_mask = inspect.channel_mask;
+                    inspect_movie();
+                    movie_.resolve_audio_clock(movie_.rate);
                 }
                 format_.assign(movie_.asc.empty() ? sizeof(WAVEFORMATEX)
                                                   : sizeof(WAVEFORMATEXTENSIBLE) + movie_.asc.size(),
@@ -468,7 +517,8 @@ class AudioReader final : public Reader,
                 buffer_size_ = std::max<DWORD>(movie_.max_packet, 1024);
                 // Fragmented files can update metadata in existing padding.
                 // Commit reports insufficient space without moving media.
-                if ((movie_.gapless || !movie_.edits.empty()) && movie_.codec == aac_subtype.Data1) {
+                if ((movie_.gapless || !movie_.edits.empty() || movie_.configuration_changes) &&
+                    movie_.codec == aac_subtype.Data1) {
                     trimmed_pcm_ = true;
                     const auto& last = movie_.samples.back();
                     const auto media_end = presentation_frame(last.presentation_end());
@@ -477,6 +527,11 @@ class AudioReader final : public Reader,
                         const auto begin = rescale(movie_.trim_begin, movie_.trim_begin_scale, movie_.rate);
                         play_length_ = rescale(movie_.trim_length, movie_.trim_length_scale, movie_.rate);
                         require(play_length_ && begin <= media_length_ && play_length_ <= media_length_ - begin);
+                        segments_.push_back({begin, 0, play_length_, false});
+                    } else if (movie_.edits.empty()) {
+                        const auto begin = movie_.seek_bias > 0 ? uint64_t(presentation_frame(movie_.seek_bias)) : 0;
+                        require(begin < media_length_);
+                        play_length_ = media_length_ - begin;
                         segments_.push_back({begin, 0, play_length_, false});
                     } else {
                         uint64_t ticks{};

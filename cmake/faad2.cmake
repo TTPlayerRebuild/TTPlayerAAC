@@ -54,6 +54,12 @@ faad_replace("libfaad/common.h"
 
 include("${CMAKE_CURRENT_LIST_DIR}/faad2_compat.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/faad2_rates_compat.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/faad2_frequency_compat.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/faad2_ld_compat.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/faad2_coupling_compat.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/faad2_ssr_compat.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/faad2_channel_compat.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/faad2_ltp_drc_compat.cmake")
 
 file(GLOB FAAD_SOURCES CONFIGURE_DEPENDS "${FAAD_PATCHED_DIR}/libfaad/*.c")
 add_library(ttp_faad STATIC ${FAAD_SOURCES})
