@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include "alac.h"
 #include <map>
 namespace ttp::aac {
 struct Sample {

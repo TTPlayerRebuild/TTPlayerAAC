@@ -1,0 +1,7 @@
+FFmpeg 9.0.2, LGPL-2.1-or-later profile; only ALAC decoder + avutil enabled.
+https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+SHA256: 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+cmake/build_alac.py uses a private out-of-tree build and never patches sources.
+Source release attachments include the actual source tree used for that build.
+The plugin can be rebuilt/relinked using the included source and build scripts.
+No FFmpeg executable or shared DLL is needed at runtime.

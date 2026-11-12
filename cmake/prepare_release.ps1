@@ -36,12 +36,14 @@ $notes = @"
 下载并解压 ttp_aac-$version.zip，关闭播放器后将 AddIn/ttp_aac.dll 复制到千千静听安装目录。
 同一 x86 DLL 支持普通版及 XP SP3／Win7，CPU 需要 SSE2。
 ZIP 仅包含 AddIn/ttp_aac.dll 和 SHA256SUMS.txt；Nero 编码组件需保留播放器原有文件。
-对应源码另见 ttp_aac-$version-source.zip，包含 FAAD2 2.11.4 原始解码源码、适配脚本及完整许可证，不含本地测试。
+新增 MP4 ALAC 16/20/24/32-bit 整数输出及 .alac / .mp4a 别名，详见源码文档。
+对应源码另见 ttp_aac-$version-source.zip，包含 FAAD2 2.11.4、ALAC 后端 FFmpeg 9.0.2 完整源码、GNU make 归档、适配脚本及许可证，不含本地测试。
 Code from FAAD2 is copyright (c) Nero AG, www.nero.com
 FAAD2 使用 GPL-2.0-or-later；包含该核心的插件整体分发须遵循其条款，自有代码的 MIT 许可不替代第三方许可。
 
 [本次构建的源码、许可证和构建说明]($repoUrl/tree/$Commit)
 [FAAD2 完整许可证]($repoUrl/blob/$Commit/third_party/faad2/COPYING)
+[FFmpeg LGPL-2.1 许可证]($repoUrl/blob/$Commit/third_party/ffmpeg/COPYING.LGPLv2.1)
 "@
 $notes | Set-Content -LiteralPath (Join-Path $ArtifactDirectory 'release-notes.md') -Encoding UTF8
 if ($env:GITHUB_OUTPUT) {

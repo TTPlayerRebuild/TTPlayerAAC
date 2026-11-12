@@ -115,7 +115,7 @@ void descriptors(const BYTE *p, size_t n, Bytes &asc, BYTE &object_type, int dep
 }
 AudioDescription audio_description(const Bytes &b, Box audio) {
     AudioDescription result;
-    require(audio.type == cc("mp4a"), HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+    require(audio.type == cc("mp4a") || audio.type == alac_codec, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
     const BYTE *p = data(b, audio, 28);
     WORD version = be16(p + 8);
     result.channels = be16(p + 16);
@@ -125,6 +125,20 @@ AudioDescription audio_description(const Bytes &b, Box audio) {
         skip += 16;
     else
         require(version == 0, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+    require(!child(b, audio, cc("sinf"), skip), HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+    if (audio.type == alac_codec) {
+        auto cookie = child(b, audio, alac_codec, skip);
+        if (!cookie) cookie = child(b, child(b, audio, cc("wave"), skip), alac_codec);
+        require(cookie && cookie.head == 8 && cookie.size == 36);
+        const auto* config = data(b, cookie, 28);
+        require(be32(config) == 0 && config[8] == 0);
+        result.asc = slice(b, cookie);
+        result.codec = alac_codec; result.channels = config[13]; result.rate = be32(config + 24);
+        require(result.channels && result.channels <= 8 && result.rate && be32(config + 4) &&
+            be32(config + 4) <= 65536 && (config[9] == 16 || config[9] == 20 || config[9] == 24 || config[9] == 32));
+        result.configuration = result.asc;
+        return result;
+    }
     auto esds = child(b, audio, cc("esds"), skip);
     if (!esds) {
         auto wave = child(b, audio, cc("wave"), skip);
@@ -674,7 +688,7 @@ void Mp4File::open(IStream *stream) {
             const auto &description = descriptions[sample.description - 1];
             require(description.codec == codec, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
             if (!initial.same_configuration(description)) {
-                require(codec == 0x43414146, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+                require(codec == 0x43414146 || codec == alac_codec, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
                 configuration_changes = true;
             }
         }
@@ -710,7 +724,7 @@ void Mp4File::open(IStream *stream) {
     duration_ms = milliseconds(end, timescale);
     bitrate = duration_ms ? dword(total * 8000 / duration_ms) : 0;
     read_tags();
-    if (codec == 0x43414146 && !samples.empty()) {
+    if ((codec == 0x43414146 || codec == alac_codec) && !samples.empty()) {
         auto mvhd = child(moov_, root, cc("mvhd"));
         if (mvhd) {
             const auto* p = data(moov_, mvhd, 4);

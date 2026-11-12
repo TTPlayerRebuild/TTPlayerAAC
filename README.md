@@ -1,5 +1,7 @@
 # ttp_aac
 
+新增：[2026-11-11 ALAC 整数高精度输出与 `.alac` / `.mp4a` 后缀](docs/ALAC.md)。
+
 最新补全与验收：[2026-10-24](docs/COMPLETION_20261024.md)。
 后续补全：[多段／空编辑列表及精确定位](docs/EDIT_LIST_COMPLETION_20261024.md)。
 最新时间轴扩展：[2026-10-25 composition offset、分片编辑与媒体空隙](docs/PRESENTATION_TIMELINE_20261025.md)。
@@ -20,6 +22,7 @@ DLL 文件／产品版本与发行包统一采用 Actions 的北京时间日期�
 
 - 恢复原插件的 MP4 Reader、AAC Reader、AAC Decoder、Nero HE-AAC Encoder 四类接口。
 - AAC ADTS／ADIF、普通 MP4/M4A，以及本地分片 MP4 的解码、时长和定位；未知长度 ADTS／ADIF 支持顺序播放。
+- MP4 中的 ALAC 16/20/24/32-bit 整数 PCM 解码；`.alac` / `.mp4a` 是 MP4 别名，不是任意裸码流。
 - 普通 MP4 的标签与 JPEG/PNG 封面读取、写入、删除；AAC 标签调用宿主 `CreateStdContent`。
 - Nero 编码、标签传递和配置入口；编码仍需原本独立的 `Aac.dll`、`aacenc32.dll`、`NeroIPP.dll`。
 - 一个 x86 DLL 同时供普通版和 XP SP3／Win7 版使用；CPU 需要 SSE2。
@@ -39,7 +42,7 @@ LTP 依赖 CCE 和 SSR CCE 按规范拒绝，不能声称与原 DLL 所有分支
 
 需要 Visual Studio C++ x86 工具、Windows SDK、CMake、Python 3。
 默认使用 VS 2026（要求 CMake 4.2+）；也可传 `-Generator 'Visual Studio 17 2022'`。
-首次配置下载带 SHA-256 校验的 FAAD2 **2.11.4**、VC-LTL 5.3.1 与 YY-Thunks 1.2.2。
+首次配置下载带 SHA-256 校验的 FAAD2 **2.11.4**、FFmpeg **9.0.2**（仅 ALAC + avutil）、VC-LTL 5.3.1 与 YY-Thunks 1.2.2；ALAC 构建另需 Git for Windows Bash 和 GNU make（可自动引导）。
 FAAD2 源码不提交到 Git；仓库保留完整许可、作者信息、来源记录及构建适配脚本。
 采用现代 MSVC + VC-LTL + YY-Thunks；不需要 VS2019 Build Tools 或 `v141_xp`。
 默认按体积优化：C++17、`/O1 /Ob1 /Os /GL`、链接时优化和未使用代码移除，
@@ -57,7 +60,7 @@ FAAD2 源码不提交到 Git；仓库保留完整许可、作者信息、来源�
 - `legacy-imports.json`：留在本地构建目录的 XP／Win7 导入检查报告，不加入 ZIP。
 
 发布时使用 `./build.ps1 -Package -SourcePackage`，另生成 `ttp_aac-yyyy.MM.dd-source.zip`。
-该源码包包含本工程与实际使用的 FAAD2 解码源码，可独立构建，不需要再次下载 FAAD2；
+该源码包包含本工程与实际使用的 FAAD2、ALAC 后端 FFmpeg 完整源码和 GNU make 归档，可独立构建，不需要再次下载这些编解码源码；
 VC-LTL、YY-Thunks 仍按固定版本获取。运行 ZIP 的内容不变。
 
 可用 `-PackageVersion '2026.09.22p1'` 同时指定 DLL 文件／产品版本与包名版本；

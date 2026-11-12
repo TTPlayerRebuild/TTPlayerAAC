@@ -58,7 +58,7 @@ private:
         return text(mp4_ ? L"MP4 Reader" : L"AAC Reader", out);
     }
     HRESULT STDMETHODCALLTYPE Extensions(wchar_t **out) override {
-        return text(mp4_ ? L"MPEG-4 Audio (*.m4a;*.mp4;*.3gp;*.3g2)" : L"AAC Audio (*.aac)", out);
+        return text(mp4_ ? L"MPEG-4 / Apple Lossless Audio (*.m4a;*.mp4;*.3gp;*.3g2;*.alac;*.mp4a)" : L"AAC Audio (*.aac)", out);
     }
 };
 class DecoderFactory final : public FactoryBase<DecoderCreator> {

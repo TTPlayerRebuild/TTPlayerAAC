@@ -76,6 +76,8 @@ if ($SourcePackage) {
     foreach ($entry in @('include','libfaad','COPYING','AUTHORS','README','properties.json')) {
         Copy-AacSourceEntry (Join-Path $upstream $entry) $decoderSource
     }
+    & python (Join-Path $PSScriptRoot 'cmake/package_alac_source.py') --build $BuildDirectory --destination $source
+    if ($LASTEXITCODE -ne 0) { throw 'ALAC backend source packaging failed.' }
     $sourceArchive = Join-Path $output "ttp_aac-$PackageVersion-source.zip"
     Compress-Archive -LiteralPath $source -DestinationPath $sourceArchive -Force
     $archives += $sourceArchive

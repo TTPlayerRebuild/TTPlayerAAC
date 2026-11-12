@@ -19,6 +19,9 @@ class AudioReader final : public Reader,
     ComPtr<Metadata> content_;
     Mp4File movie_;
     AacCore raw_;
+    AlacCore alac_;
+    DWORD movie_frame_length_{};
+    bool is_alac() const { return mp4_ && movie_.codec == alac_codec; }
     std::uint64_t begin_{}, end_{}, raw_position_{};
     std::uint64_t raw_play_frame_{}, raw_seek_target_{};
     bool raw_seek_pending_{};
@@ -56,6 +59,13 @@ class AudioReader final : public Reader,
     }
     void configure_movie(DWORD description) {
         require(description && description <= movie_.descriptions.size());
+        if (is_alac()) {
+            alac_.config(movie_.descriptions[description - 1].asc);
+            require(alac_.rate == movie_.rate && alac_.channels == movie_.channels &&
+                alac_.channel_mask == movie_channel_mask_, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+            active_description_ = description;
+            return;
+        }
         raw_.config(movie_.descriptions[description - 1].asc);
         // Format discovery has already resolved implicit SBR/PS. Keep the
         // fixed output contract when a new AAC configuration starts warming.
@@ -65,6 +75,22 @@ class AudioReader final : public Reader,
         active_description_ = description;
     }
     void inspect_movie() {
+        if (is_alac()) {
+            alac_.config(movie_.asc);
+            movie_.rate = alac_.rate; movie_.channels = alac_.channels;
+            movie_channel_mask_ = alac_.channel_mask; movie_frame_length_ = alac_.frame_length;
+            std::vector<bool> seen(movie_.descriptions.size());
+            for (const auto& sample : movie_.samples) {
+                const auto id = sample.description; require(id && id <= seen.size());
+                if (seen[id - 1]) continue; seen[id - 1] = true;
+                AlacCore inspect; inspect.config(movie_.descriptions[id - 1].asc);
+                require(inspect.rate == alac_.rate && inspect.channels == alac_.channels &&
+                    inspect.bits == alac_.bits && inspect.channel_mask == alac_.channel_mask,
+                    HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+                movie_frame_length_ = std::max(movie_frame_length_, inspect.frame_length);
+            }
+            return;
+        }
         if (movie_.samples.empty()) {
             AacCore inspect; inspect.config(movie_.asc);
             movie_.channels = inspect.channels; movie_.rate = inspect.rate;
@@ -134,6 +160,11 @@ class AudioReader final : public Reader,
             return true;
         }
         const auto wanted = size_t(packet - movie_.samples.begin());
+        if (is_alac() && decoded_sample_ != wanted) {
+            // ALAC frames are independent; unlike AAC, seeking need not replay
+            // every previous packet to rebuild an overlap/predictive history.
+            sample_ = wanted; decoded_sample_ = SIZE_MAX;
+        }
         // Timestamp gaps do not reset AAC overlap. Backward/repeated edits
         // replay compressed packets, preserving the decoder's true history.
         if (decoded_sample_ != SIZE_MAX && wanted < decoded_sample_) restart_trimmed();
@@ -146,9 +177,11 @@ class AudioReader final : public Reader,
             else active_description_ = s.description;
             auto bytes = read_at(stream_.p, s.offset, s.size);
             DWORD used{};
-            decoded_ = raw_.decode(bytes.data(), DWORD(bytes.size()), used);
+            if (is_alac()) { decoded_ = alac_.decode(bytes); used = DWORD(bytes.size()); }
+            else decoded_ = raw_.decode(bytes.data(), DWORD(bytes.size()), used);
             require(used == bytes.size());
             if (decoded_.empty()) {
+                require(!is_alac(), STG_E_READFAULT);
                 // FAAD suppresses the first overlap frame. If an edit selects
                 // it, retain its media time as silence rather than shortening
                 // the track or shifting all subsequent sample coordinates.
@@ -157,7 +190,7 @@ class AudioReader final : public Reader,
                 require(frames && frames <= 4096);
                 decoded_.assign(size_t(frames) * wave().nBlockAlign, 0);
             }
-            require(raw_.channel_mask == movie_channel_mask_, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+            require(is_alac() || raw_.channel_mask == movie_channel_mask_, HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
             decoded_sample_ = sample_++;
         }
         const auto packet_end = presentation_frame(packet->presentation_end());
@@ -182,6 +215,14 @@ class AudioReader final : public Reader,
         });
     }
     const WAVEFORMATEX &wave() const { return *reinterpret_cast<const WAVEFORMATEX *>(format_.data()); }
+    void movie_pcm_format() {
+        if (!is_alac()) { float_format(); return; }
+        format_.assign(sizeof(WAVEFORMATEX), 0);
+        auto* f = reinterpret_cast<WAVEFORMATEX*>(format_.data());
+        *f = {WAVE_FORMAT_PCM, WORD(alac_.channels), alac_.rate, alac_.rate * alac_.channels * alac_.bytes,
+            WORD(alac_.channels * alac_.bytes), WORD(alac_.bytes * 8), 0};
+        buffer_size_ = movie_frame_length_ * f->nBlockAlign;
+    }
     void float_format() {
         require(raw_.rate && raw_.channels && raw_.channels <= 64);
         format_.assign(sizeof(WAVEFORMATEX), 0);
@@ -472,7 +513,7 @@ class AudioReader final : public Reader,
         const auto probed = PrepareFormatInfo(probe_stream, mp4_ ? ttp::format::Mp4 : ttp::format::Aac);
         if (FAILED(probed)) return probed;
         const auto opened = OpenImpl(probe_stream, probe_flags);
-        if (opened == S_OK) { SetSourceCodec(mp4_ && movie_.codec == WAVE_FORMAT_MPEGLAYER3 ? "mp3" : "aac"); }
+        if (opened == S_OK) { SetSourceCodec(is_alac() ? "alac" : mp4_ && movie_.codec == WAVE_FORMAT_MPEGLAYER3 ? "mp3" : "aac"); }
         return CompleteFormatInfo(opened);
     }
     HRESULT OpenImpl(IStream *stream, DWORD flags) {
@@ -490,7 +531,7 @@ class AudioReader final : public Reader,
             writable_ = !(flags & 1) && (stat.grfMode & 3) == STGM_READWRITE;
             if (mp4_) {
                 movie_.open(stream);
-                if (movie_.codec == aac_subtype.Data1) {
+                if (movie_.codec == aac_subtype.Data1 || is_alac()) {
                     inspect_movie();
                     movie_.resolve_audio_clock(movie_.rate);
                 }
@@ -517,8 +558,8 @@ class AudioReader final : public Reader,
                 buffer_size_ = std::max<DWORD>(movie_.max_packet, 1024);
                 // Fragmented files can update metadata in existing padding.
                 // Commit reports insufficient space without moving media.
-                if ((movie_.gapless || !movie_.edits.empty() || movie_.configuration_changes) &&
-                    movie_.codec == aac_subtype.Data1) {
+                if (!movie_.samples.empty() && (is_alac() ||
+                    ((movie_.gapless || !movie_.edits.empty() || movie_.configuration_changes) && movie_.codec == aac_subtype.Data1))) {
                     trimmed_pcm_ = true;
                     const auto& last = movie_.samples.back();
                     const auto media_end = presentation_frame(last.presentation_end());
@@ -539,17 +580,24 @@ class AudioReader final : public Reader,
                             require(edit.length <= UINT64_MAX - ticks);
                             const auto begin = rescale(edit.begin, movie_.timescale, movie_.rate);
                             ticks += edit.length;
-                            const auto end = edit.to_end ? media_length_ - begin
+                            auto end = edit.to_end ? media_length_ - begin
                                 : rescale(ticks, movie_.edit_scale, movie_.rate);
                             require(edit.empty || (begin <= media_length_ && end - play_length_ <= UINT64_MAX - begin));
+                            // elst's coarse movie clock can round a final ALAC
+                            // edit a fraction of a millisecond beyond the last
+                            // real sample. Do not append fabricated PCM to a
+                            // lossless track for this permitted rounding error.
+                            if (is_alac() && !edit.empty && &edit == &movie_.edits.back())
+                                end = std::min(end, play_length_ + media_length_ - begin);
                             if (end != play_length_)
                                 segments_.push_back({begin, play_length_, end, edit.empty});
                             play_length_ = end;
                         }
                         require(play_length_ > 0);
                     }
-                    restart_trimmed(); float_format(); duration_ = milliseconds(play_length_, movie_.rate);
+                    restart_trimmed(); movie_pcm_format(); duration_ = milliseconds(play_length_, movie_.rate);
                 }
+                if (is_alac() && movie_.samples.empty()) movie_pcm_format();
             } else
                 open_raw();
             opened_ = true;
@@ -574,6 +622,7 @@ class AudioReader final : public Reader,
         *out = nullptr;
         if (format_.empty())
             return E_UNEXPECTED;
+        if(is_alac())return ttp::pcm::copy_format(wave(),movie_channel_mask_,alac_.bits,out);
         if(!mp4_ || trimmed_pcm_)return ttp::pcm::copy_format(wave(),raw_.channel_mask,32,out);
         auto *p = CoTaskMemAlloc(format_.size());
         if (!p)
@@ -589,7 +638,7 @@ class AudioReader final : public Reader,
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE CodecName(wchar_t **out) override {
-        return text(mp4_ && movie_.codec == WAVE_FORMAT_MPEGLAYER3 ? L"MP3|MPEG Layer-3"
+        return text(is_alac() ? L"ALAC|Apple Lossless Audio" : mp4_ && movie_.codec == WAVE_FORMAT_MPEGLAYER3 ? L"MP3|MPEG Layer-3"
                                                                    : L"AAC|Advanced Audio Coding",
                     out);
     }
@@ -602,7 +651,7 @@ class AudioReader final : public Reader,
     HRESULT STDMETHODCALLTYPE BitDepth(WORD *out) override {
         if (!out)
             return E_POINTER;
-        *out = mp4_ && !trimmed_pcm_ ? 16 : 32;
+        *out = is_alac() ? alac_.bits : mp4_ && !trimmed_pcm_ ? 16 : 32;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetCallback(IUnknown *callback) override {
