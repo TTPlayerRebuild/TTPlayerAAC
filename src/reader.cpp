@@ -651,7 +651,9 @@ class AudioReader final : public Reader,
     HRESULT STDMETHODCALLTYPE BitDepth(WORD *out) override {
         if (!out)
             return E_POINTER;
-        *out = is_alac() ? alac_.bits : mp4_ && !trimmed_pcm_ ? 16 : 32;
+        // MP4 AAC's legacy nominal depth does not change when an edit list
+        // makes the reader decode to float internally. Format describes PCM.
+        *out = is_alac() ? alac_.bits : mp4_ ? 16 : 32;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetCallback(IUnknown *callback) override {

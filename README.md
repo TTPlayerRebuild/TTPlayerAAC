@@ -22,6 +22,7 @@ DLL 文件／产品版本与发行包统一采用 Actions 的北京时间日期�
 
 - 恢复原插件的 MP4 Reader、AAC Reader、AAC Decoder、Nero HE-AAC Encoder 四类接口。
 - AAC ADTS／ADIF、普通 MP4/M4A，以及本地分片 MP4 的解码、时长和定位；未知长度 ADTS／ADIF 支持顺序播放。
+- MP4 中 AAC 的 `BitDepth()` 保持旧接口的标称 16 位；需要在 Reader 内解码裁剪时，`Format()` 和 `Read()` 仍使用 float32 PCM。
 - MP4 中的 ALAC 16/20/24/32-bit 整数 PCM 解码；`.alac` / `.mp4a` 是 MP4 别名，不是任意裸码流。
 - 普通 MP4 的标签与 JPEG/PNG 封面读取、写入、删除；AAC 标签调用宿主 `CreateStdContent`。
 - Nero 编码、标签传递和配置入口；编码仍需原本独立的 `Aac.dll`、`aacenc32.dll`、`NeroIPP.dll`。
